@@ -893,7 +893,8 @@
             <span>ドラッグ中、元画像と同じ縦横比を保つ</span>
           </div>
           <div class="btnrow" style="margin-top:10px;">
-            <button id="cropUndoBtn" type="button" disabled title="直前の1回分のトリミング操作だけを取り消します(Ctrl+Z / Macは⌘+Z)">ひとつ前のトリミングに戻す</button>
+            <button id="cropUndoBtn" type="button" disabled title="直前のトリミング操作を取り消します(最大5回・Ctrl+Z / Macは⌘+Z)">ひとつ前のトリミングに戻す</button>
+            <button id="cropRedoBtn" type="button" disabled title="取り消した操作をやり直します(Ctrl+Shift+Z / Macは⌘+Shift+Z)">やり直す</button>
             <button id="cropResetBtn" type="button">トリミング解除</button>
           </div>
         </div>
@@ -1344,16 +1345,42 @@
     const cardImgEl = card.querySelector('img');
 
     imgboxEl.addEventListener('mousedown', (e)=>{
-      if(!(e.ctrlKey || e.metaKey)) return;
       if(!item.processed) return;
-      e.preventDefault();
-      const rect = cardImgEl.getBoundingClientRect();
-      thumbDragState = {
-        item, imgEl: cardImgEl,
-        startClientX: e.clientX, startClientY: e.clientY,
-        rectLeft: rect.left, rectTop: rect.top, rectWidth: rect.width, rectHeight: rect.height,
-        moved: false, shiftKey: e.shiftKey, altKey: e.altKey
-      };
+
+      if(e.ctrlKey || e.metaKey){
+        e.preventDefault();
+        const rect = cardImgEl.getBoundingClientRect();
+        thumbDragState = {
+          item, imgEl: cardImgEl,
+          startClientX: e.clientX, startClientY: e.clientY,
+          rectLeft: rect.left, rectTop: rect.top, rectWidth: rect.width, rectHeight: rect.height,
+          moved: false, shiftKey: e.shiftKey, altKey: e.altKey
+        };
+        return;
+      }
+
+      // no Ctrl held: if this card already has a range waiting to be
+      // confirmed and the mousedown landed inside it, allow dragging it to
+      // a new position instead of only being able to redraw from scratch.
+      // A plain click with no real movement still falls through to the
+      // normal 'click' handler, which confirms it in place.
+      if(thumbCropPendingItem === item && thumbCropPendingViewFrac && !e.target.closest('.rotate-controls')){
+        const rect = cardImgEl.getBoundingClientRect();
+        const cx = clamp((e.clientX-rect.left)/rect.width, 0, 1);
+        const cy = clamp((e.clientY-rect.top)/rect.height, 0, 1);
+        const p = thumbCropPendingViewFrac;
+        if(cx >= p.x && cx <= p.x+p.w && cy >= p.y && cy <= p.y+p.h){
+          e.preventDefault();
+          thumbMoveState = {
+            item, imgEl: cardImgEl,
+            startClientX: e.clientX, startClientY: e.clientY,
+            rectWidth: rect.width, rectHeight: rect.height,
+            origX: p.x, origY: p.y, w: p.w, h: p.h,
+            curX: p.x, curY: p.y,
+            moved: false
+          };
+        }
+      }
     });
 
     imgboxEl.addEventListener('mousemove', (e)=>{
@@ -1391,7 +1418,28 @@
 
     imgboxEl.addEventListener('click', async (e)=>{
       if(!item.processed) return;
-      if(e.ctrlKey || e.metaKey) return; // any Ctrl-held interaction is fully handled by the dedicated mousedown/mouseup logic instead
+      if(suppressNextThumbClick){ suppressNextThumbClick = false; return; }
+
+      // a drawn-but-unconfirmed range is waiting on this card — clicking
+      // inside it confirms it, regardless of whether Ctrl is still held
+      // (releasing Ctrl between the drag and the confirming click is
+      // natural, so this must not require Ctrl to still be down)
+      if(thumbCropPendingItem === item && thumbCropPendingViewFrac){
+        const rect = cardImgEl.getBoundingClientRect();
+        const cx = clamp((e.clientX-rect.left)/rect.width, 0, 1);
+        const cy = clamp((e.clientY-rect.top)/rect.height, 0, 1);
+        const p = thumbCropPendingViewFrac;
+        if(cx >= p.x && cx <= p.x+p.w && cy >= p.y && cy <= p.y+p.h){
+          const frac = p;
+          thumbCropPendingItem = null;
+          thumbCropPendingViewFrac = null;
+          hideThumbCropBox();
+          await applyCropToThumbnailItem(item, frac);
+          return;
+        }
+      }
+
+      if(e.ctrlKey || e.metaKey) return; // any other Ctrl-held interaction is fully handled by the dedicated mousedown/mouseup logic instead
       try{
         const ok = await ensureBaseCanvasLoaded(item);
         if(ok){
@@ -2436,6 +2484,8 @@
         item.mergeOrder = null;
         if(item.cardEl){
           item.cardEl.classList.remove('merge-selected');
+          const mergeChk = item.cardEl.querySelector('.merge-chk');
+          if(mergeChk) mergeChk.checked = false; // otherwise this stale checked state resurfaces if the photo is later restored from trash
           try{
             deleteItemWithUndo(item, item.cardEl);
           }catch(err){
@@ -2677,8 +2727,7 @@
     cropConfirmBar.style.display = 'none';
     cropSelection.style.display = 'none';
     cropApplyBtn.disabled = true;
-    cropUndoSnapshot = null;
-    cropUndoBtn.disabled = true;
+    updateCropUndoRedoButtons(); // reflect the shared history — opening a photo shouldn't wipe out undo/redo
 
     // reset blur-mode UI state and show this photo's existing blur regions
     blurModeActive = false;
@@ -2750,16 +2799,40 @@
   modalNextBtn.addEventListener('click', ()=>navigateModal(1));
 
   document.addEventListener('keydown', (e)=>{
-    if(!modalItem || modalOverlay.style.display === 'none') return;
-    // don't hijack arrow keys while the person is typing in a number field
+    // don't hijack shortcuts while the person is typing in a number field
     if(document.activeElement && document.activeElement.tagName === 'INPUT') return;
+
+    if((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey) && e.shiftKey){
+      // Ctrl+Shift+Z / Cmd+Shift+Z: redo the most recently undone crop action
+      if(cropRedoStack.length){
+        e.preventDefault();
+        performCropRedo();
+      }
+      return;
+    }
+
+    if((e.key === 'y' || e.key === 'Y') && (e.ctrlKey || e.metaKey) && !e.shiftKey){
+      // Ctrl+Y is a common alias for redo on Windows
+      if(cropRedoStack.length){
+        e.preventDefault();
+        performCropRedo();
+      }
+      return;
+    }
+
+    if((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey) && !e.shiftKey){
+      // Ctrl+Z / Cmd+Z: undo the most recent crop action — works whether it
+      // was made in the preview modal or via a thumbnail quick-crop
+      if(cropUndoStack.length){
+        e.preventDefault();
+        performCropUndo();
+      }
+      return;
+    }
+
+    if(!modalItem || modalOverlay.style.display === 'none') return;
     if(e.key === 'ArrowLeft') navigateModal(-1);
     else if(e.key === 'ArrowRight') navigateModal(1);
-    else if((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey) && !e.shiftKey){
-      // Ctrl+Z / Cmd+Z: undo the most recent crop action, same as the button
-      e.preventDefault();
-      if(!cropUndoBtn.disabled) cropUndoBtn.click();
-    }
   });
 
   document.getElementById('modalCloseBtn').addEventListener('click', closeFineTuneModal);
@@ -3227,6 +3300,8 @@
   //  - a plain Ctrl+click elsewhere (no pending range) → applies the
   //    last-used range centered on the click, same as before
   let thumbDragState = null; // {item, imgEl, startClientX, startClientY, rectLeft, rectTop, rectWidth, rectHeight, moved, lastRectFrac}
+  let thumbMoveState = null; // {item, imgEl, startClientX, startClientY, rectWidth, rectHeight, origX, origY, w, h, curX, curY, moved} — dragging an already-drawn pending range to reposition it
+  let suppressNextThumbClick = false; // set right after a genuine move-drag, so the native 'click' that follows doesn't also confirm the box
   let thumbCropPendingItem = null;      // item that currently has a drawn-but-unconfirmed range
   let thumbCropPendingViewFrac = null;  // {x,y,w,h} for that range, in the item's current (rotated) view fractions
 
@@ -3261,10 +3336,43 @@
     const y2 = clamp(e.clientY-rectTop, 0, rectHeight);
     const x = Math.min(x1,x2), y = Math.min(y1,y2);
     const w = Math.abs(x2-x1), h = Math.abs(y2-y1);
-    if(Math.hypot(x2-x1, y2-y1) > 5) thumbDragState.moved = true;
+    // use the RAW (unclamped) mouse movement to detect a genuine drag —
+    // using the clamped coordinates here would wrongly read as "no
+    // movement" whenever a drag starts and ends off-photo in the same
+    // corner (both ends clamp to the same point), even though the mouse
+    // itself moved a lot
+    const rawDx = e.clientX - thumbDragState.startClientX;
+    const rawDy = e.clientY - thumbDragState.startClientY;
+    if(Math.hypot(rawDx, rawDy) > 5) thumbDragState.moved = true;
     if(!thumbDragState.moved) return;
     thumbDragState.lastRectFrac = {x:x/rectWidth, y:y/rectHeight, w:w/rectWidth, h:h/rectHeight};
     showThumbCropBoxOn(thumbDragState.imgEl, x/rectWidth, y/rectHeight, w/rectWidth, h/rectHeight);
+  });
+
+  window.addEventListener('mousemove', (e)=>{
+    if(!thumbMoveState) return;
+    const s = thumbMoveState;
+    const dxFrac = (e.clientX - s.startClientX) / s.rectWidth;
+    const dyFrac = (e.clientY - s.startClientY) / s.rectHeight;
+    if(Math.hypot(e.clientX-s.startClientX, e.clientY-s.startClientY) > 4) s.moved = true;
+    if(!s.moved) return;
+    s.curX = clamp(s.origX + dxFrac, 0, Math.max(0, 1 - s.w));
+    s.curY = clamp(s.origY + dyFrac, 0, Math.max(0, 1 - s.h));
+    showThumbCropBoxOn(s.imgEl, s.curX, s.curY, s.w, s.h);
+  });
+
+  window.addEventListener('mouseup', ()=>{
+    if(!thumbMoveState) return;
+    const s = thumbMoveState;
+    thumbMoveState = null;
+    if(s.moved){
+      // stays pending at its new position — still needs a click inside it to confirm
+      thumbCropPendingItem = s.item;
+      thumbCropPendingViewFrac = {x: s.curX, y: s.curY, w: s.w, h: s.h};
+      suppressNextThumbClick = true; // the native 'click' that follows this drag must not also confirm it
+    }
+    // if it didn't move, this was just a click — the normal 'click' handler
+    // (which fires right after this) confirms it in place as usual
   });
 
   window.addEventListener('mouseup', async (e)=>{
@@ -3272,11 +3380,22 @@
     const state = thumbDragState;
     thumbDragState = null;
 
-    if(state.moved && state.lastRectFrac && state.lastRectFrac.w > 0.04 && state.lastRectFrac.h > 0.04){
-      // a meaningful drag just happened — this becomes the new pending range,
-      // replacing any previous one (for this item or another)
-      thumbCropPendingItem = state.item;
-      thumbCropPendingViewFrac = state.lastRectFrac;
+    if(state.moved){
+      // a genuine drag happened. If it produced a usable range, it becomes
+      // the new pending range (replacing any previous one). Either way,
+      // this must NOT fall through to the "just a click" logic below —
+      // otherwise releasing off-photo in a way that clamps to a
+      // near-zero-size rect would be misread as a plain click and
+      // auto-apply a crop instead of simply doing nothing.
+      if(state.lastRectFrac && state.lastRectFrac.w > 0.04 && state.lastRectFrac.h > 0.04){
+        thumbCropPendingItem = state.item;
+        thumbCropPendingViewFrac = state.lastRectFrac;
+        // the native 'click' that follows this drag lands right where the
+        // mouse released — which is always inside the box we just drew —
+        // so it must be suppressed, or it would instantly confirm the
+        // range instead of leaving it pending for a later, deliberate click
+        suppressNextThumbClick = true;
+      }
       return;
     }
 
@@ -3294,22 +3413,12 @@
       return;
     }
 
-    // not a meaningful drag — treat as a click
-    if(thumbCropPendingItem === state.item && thumbCropPendingViewFrac){
-      const rect = state.imgEl.getBoundingClientRect();
-      const cx = clamp((e.clientX-rect.left)/rect.width, 0, 1);
-      const cy = clamp((e.clientY-rect.top)/rect.height, 0, 1);
-      const p = thumbCropPendingViewFrac;
-      if(cx >= p.x && cx <= p.x+p.w && cy >= p.y && cy <= p.y+p.h){
-        const frac = p;
-        thumbCropPendingItem = null;
-        thumbCropPendingViewFrac = null;
-        hideThumbCropBox();
-        await applyCropToThumbnailItem(state.item, frac);
-        return;
-      }
-    }
-
+    // not a meaningful drag — treat as a plain Ctrl+click. Confirming a
+    // pending (already-drawn) range is intentionally NOT handled here —
+    // that only happens via an unmodified click (see the 'click' listener
+    // below), so holding Ctrl through the release always means "I want a
+    // Ctrl-shortcut action", never "confirm what's pending". Any pending
+    // range is abandoned once a different Ctrl action is taken.
     if(lastAppliedCropFrac){
       const rect = state.imgEl.getBoundingClientRect();
       const clickXFrac = clamp((e.clientX-rect.left)/rect.width, 0, 1);
@@ -3335,6 +3444,11 @@
       }
       const canonicalFrac = rotatedFracToUnrotatedFrac(viewFrac, item.rotation || 0);
       const prior = item.manualCrop;
+
+      // remember the state just before this change, so it can be undone
+      // (up to 5 steps back) without wiping out earlier crops
+      pushCropUndoSnapshot(item.id, prior);
+
       if(prior){
         item.manualCrop = {
           x: prior.x + canonicalFrac.x * prior.w,
@@ -3382,10 +3496,9 @@
   }
 
   function applyCropFraction(canonicalFrac){
-    // remember the state just before this change, so a single misplaced
-    // crop can be undone without wiping out earlier, intentional crops
-    cropUndoSnapshot = {itemId: modalItem.id, manualCrop: modalItem.manualCrop ? {...modalItem.manualCrop} : null};
-    cropUndoBtn.disabled = false;
+    // remember the state just before this change, so it can be undone
+    // without wiping out earlier, intentional crops
+    pushCropUndoSnapshot(modalItem.id, modalItem.manualCrop);
 
     const prior = modalItem.manualCrop;
     if(prior){
@@ -3403,15 +3516,89 @@
     cropPresetLastUsed.title = '写真をCtrl+クリック(Macは⌘+クリック)すると、クリック位置を中心に同じサイズで即適用。Ctrl+ドラッグなら新しい範囲を選択できます';
   }
 
-  let cropUndoSnapshot = null; // {itemId, manualCrop} — the state right before the most recent crop action
+  // Shared undo/redo history for BOTH the modal's crop tools and the
+  // thumbnail quick-crop shortcuts. Each entry is {itemId, manualCrop} —
+  // the OTHER state to switch to when that entry is used. Works whether or
+  // not a modal happens to be open for the affected item.
+  const CROP_HISTORY_LIMIT = 5;
+  let cropUndoStack = [];
+  let cropRedoStack = [];
+
+  function pushCropUndoSnapshot(itemId, manualCropBeforeAction){
+    cropUndoStack.push({itemId, manualCrop: manualCropBeforeAction ? {...manualCropBeforeAction} : null});
+    if(cropUndoStack.length > CROP_HISTORY_LIMIT) cropUndoStack.shift();
+    cropRedoStack = []; // a genuinely new action invalidates whatever could have been redone
+    updateCropUndoRedoButtons();
+  }
+
+  function updateCropUndoRedoButtons(){
+    cropUndoBtn.disabled = cropUndoStack.length === 0;
+    cropRedoBtn.disabled = cropRedoStack.length === 0;
+  }
+
+  // Reprocesses `item` after its manualCrop was changed directly (by undo
+  // or redo, bypassing applyCropFraction/applyCropToThumbnailItem), keeping
+  // the modal in sync if it happens to be open for this exact item.
+  async function reprocessItemAfterHistoryChange(item){
+    lastAppliedCropFrac = item.manualCrop ? {...item.manualCrop} : lastAppliedCropFrac;
+    if(modalItem && modalItem.id === item.id){
+      await reprocessModalItem();
+      return;
+    }
+    const card = item.cardEl;
+    if(card) card.classList.add('processing');
+    try{
+      const ok = await ensureSrcImgLoaded(item);
+      if(!ok){
+        markError(item, 'この写真の再読み込みに失敗しました。もう一度読み込み直してください。');
+        return;
+      }
+      process(item);
+      await cacheProcessedResult(item);
+      releaseSrcImg(item);
+      releaseFullResCanvas(item);
+    }catch(err){
+      console.error('[crop undo/redo] failed:', item.file && item.file.name, err);
+      markError(item, '処理に失敗しました: ' + (err && err.message ? err.message : err));
+    }finally{
+      if(card) card.classList.remove('processing');
+    }
+  }
+
+  async function performCropUndo(){
+    if(!cropUndoStack.length) return;
+    const snap = cropUndoStack.pop();
+    const item = (modalItem && modalItem.id === snap.itemId) ? modalItem : items.find(it=>it.id === snap.itemId);
+    if(!item){ updateCropUndoRedoButtons(); return; }
+
+    // the CURRENT state becomes redoable
+    cropRedoStack.push({itemId: item.id, manualCrop: item.manualCrop ? {...item.manualCrop} : null});
+    if(cropRedoStack.length > CROP_HISTORY_LIMIT) cropRedoStack.shift();
+
+    item.manualCrop = snap.manualCrop;
+    updateCropUndoRedoButtons();
+    await reprocessItemAfterHistoryChange(item);
+  }
+
+  async function performCropRedo(){
+    if(!cropRedoStack.length) return;
+    const snap = cropRedoStack.pop();
+    const item = (modalItem && modalItem.id === snap.itemId) ? modalItem : items.find(it=>it.id === snap.itemId);
+    if(!item){ updateCropUndoRedoButtons(); return; }
+
+    // the CURRENT (pre-redo) state becomes undoable again
+    cropUndoStack.push({itemId: item.id, manualCrop: item.manualCrop ? {...item.manualCrop} : null});
+    if(cropUndoStack.length > CROP_HISTORY_LIMIT) cropUndoStack.shift();
+
+    item.manualCrop = snap.manualCrop;
+    updateCropUndoRedoButtons();
+    await reprocessItemAfterHistoryChange(item);
+  }
+
   const cropUndoBtn = document.getElementById('cropUndoBtn');
-  cropUndoBtn.addEventListener('click', async ()=>{
-    if(!modalItem || !cropUndoSnapshot || cropUndoSnapshot.itemId !== modalItem.id) return;
-    modalItem.manualCrop = cropUndoSnapshot.manualCrop;
-    cropUndoSnapshot = null;
-    cropUndoBtn.disabled = true;
-    await reprocessModalItem();
-  });
+  const cropRedoBtn = document.getElementById('cropRedoBtn');
+  cropUndoBtn.addEventListener('click', performCropUndo);
+  cropRedoBtn.addEventListener('click', performCropRedo);
 
   cropApplyBtn.addEventListener('click', async ()=>{
     if(!modalItem || !pendingCropFrac) return;
