@@ -789,9 +789,15 @@
   <div class="panel">
     <div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">
       <h2 style="margin:0;">2. プレビュー・並び替え・選択(カードをドラッグで順序変更)</h2>
-      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);margin-left:auto;">
-        <label for="gridColumns">1列に並べる枚数:</label>
-        <input type="number" id="gridColumns" min="2" max="20" step="1" placeholder="自動" style="width:64px;padding:4px 6px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:4px;">
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-left:auto;">
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+          <input type="checkbox" id="gridCropAspectLock" style="margin:0;">
+          <label for="gridCropAspectLock" style="cursor:pointer;">範囲選択時に縦横比を保持</label>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+          <label for="gridColumns">1列に並べる枚数:</label>
+          <input type="number" id="gridColumns" min="2" max="20" step="1" placeholder="自動" style="width:64px;padding:4px 6px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:4px;">
+        </div>
       </div>
     </div>
     <div class="grid" id="grid">
@@ -816,6 +822,16 @@
     <div class="btnrow" style="justify-content:flex-end;gap:10px;">
       <button id="addChoiceClearBtn" type="button">今のリストをクリアしてから追加</button>
       <button class="primary" id="addChoiceAppendBtn" type="button">今のリストに追加する</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="trashClearConfirmOverlay" style="display:none;">
+  <div class="modal-box" style="max-width:440px;padding:24px;">
+    <p id="trashClearConfirmText" style="margin:0 0 18px;line-height:1.6;"></p>
+    <div class="btnrow" style="justify-content:flex-end;gap:10px;">
+      <button id="trashClearConfirmCancelBtn" type="button">キャンセル</button>
+      <button class="primary" id="trashClearConfirmOkBtn" type="button">完全に削除する</button>
     </div>
   </div>
 </div>
@@ -890,10 +906,10 @@
           </div>
           <div class="toggle-row">
             <input type="checkbox" id="cropAspectLock">
-            <span>ドラッグ中、元画像と同じ縦横比を保つ</span>
+            <span>ドラッグ中、元画像と同じ縦横比を保つ(サムネイルのCtrl+ドラッグにも適用)</span>
           </div>
           <div class="btnrow" style="margin-top:10px;">
-            <button id="cropUndoBtn" type="button" disabled title="直前のトリミング操作を取り消します(最大5回・Ctrl+Z / Macは⌘+Z)">ひとつ前のトリミングに戻す</button>
+            <button id="cropUndoBtn" type="button" disabled title="直前の操作(トリミング・削除・結合)を取り消します(最大5回・Ctrl+Z / Macは⌘+Z)">元に戻す</button>
             <button id="cropRedoBtn" type="button" disabled title="取り消した操作をやり直します(Ctrl+Shift+Z / Macは⌘+Shift+Z)">やり直す</button>
             <button id="cropResetBtn" type="button">トリミング解除</button>
           </div>
@@ -1201,8 +1217,29 @@
   // a second drag-and-drop doesn't silently mix into (or accidentally wipe)
   // an existing batch without the person noticing.
   const addChoiceOverlay = document.getElementById('addChoiceOverlay');
+  const trashClearConfirmOverlay = document.getElementById('trashClearConfirmOverlay');
+  const trashClearConfirmText = document.getElementById('trashClearConfirmText');
+  const trashClearConfirmOkBtn = document.getElementById('trashClearConfirmOkBtn');
+  const trashClearConfirmCancelBtn = document.getElementById('trashClearConfirmCancelBtn');
   const addChoiceClearBtn = document.getElementById('addChoiceClearBtn');
   const addChoiceAppendBtn = document.getElementById('addChoiceAppendBtn');
+  function askConfirm(message){
+    return new Promise(resolve=>{
+      trashClearConfirmText.textContent = message;
+      trashClearConfirmOverlay.style.display = 'flex';
+      function cleanup(result){
+        trashClearConfirmOverlay.style.display = 'none';
+        trashClearConfirmOkBtn.removeEventListener('click', onOk);
+        trashClearConfirmCancelBtn.removeEventListener('click', onCancel);
+        resolve(result);
+      }
+      function onOk(){ cleanup(true); }
+      function onCancel(){ cleanup(false); }
+      trashClearConfirmOkBtn.addEventListener('click', onOk);
+      trashClearConfirmCancelBtn.addEventListener('click', onCancel);
+    });
+  }
+
   function askAddOrClearMode(){
     return new Promise(resolve=>{
       addChoiceOverlay.style.display = 'flex';
@@ -1336,6 +1373,14 @@
         e.stopPropagation();
         const dir = parseInt(btn.dataset.dir, 10);
         item.rotation = ((item.rotation || 0) + dir*90 + 360) % 360;
+        // a pending (drawn-but-unconfirmed) range was measured against the
+        // OLD rotation — rather than risk silently confirming a now-wrong
+        // region later, just discard it and let the person redraw
+        if(thumbCropPendingItem === item){
+          thumbCropPendingItem = null;
+          thumbCropPendingViewFrac = null;
+          hideThumbCropBox();
+        }
         const ok = await ensureBaseCanvasLoaded(item);
         if(ok) applyRotation(item);
       });
@@ -1346,6 +1391,7 @@
 
     imgboxEl.addEventListener('mousedown', (e)=>{
       if(!item.processed) return;
+      if(thumbDragState || thumbMoveState) return; // don't let a stray mousedown start a second, overlapping gesture while one is already in progress
 
       if(e.ctrlKey || e.metaKey){
         e.preventDefault();
@@ -1384,7 +1430,7 @@
     });
 
     imgboxEl.addEventListener('mousemove', (e)=>{
-      if(thumbDragState) return; // an active drag (on this or another card) takes priority
+      if(thumbDragState || thumbMoveState) return; // an active drag or move (on this or another card) takes priority
       if(!(e.ctrlKey || e.metaKey) || !item.processed) return;
       if(thumbCropPendingItem === item) return; // this card already has a drawn-but-unconfirmed box; don't override it with the hover preview
 
@@ -1412,7 +1458,7 @@
     });
 
     imgboxEl.addEventListener('mouseleave', ()=>{
-      if(thumbDragState || thumbCropPendingItem === item) return; // keep an active drag or a pending box visible
+      if(thumbDragState || thumbMoveState || thumbCropPendingItem === item) return; // keep an active drag/move or a pending box visible
       hideThumbCropBox();
     });
 
@@ -1460,6 +1506,7 @@
     });
     card.querySelector('.removebtn').addEventListener('click', ()=>{
       deleteItemWithUndo(item, card);
+      pushDeleteHistoryEntry([item.id], null);
     });
 
     card.addEventListener('dragstart', ()=>{
@@ -1563,6 +1610,16 @@
     const nextSiblingId = nextSibling ? nextSibling.dataset.id : null;
     const prevSiblingId = (prevSibling && prevSibling.classList.contains('card')) ? prevSibling.dataset.id : null;
 
+    // if this photo had a drawn-but-unconfirmed crop range waiting on it
+    // (independent of whatever else is happening, e.g. it's also being
+    // merged away), that reference would otherwise dangle once the card
+    // is removed from the document
+    if(typeof thumbCropPendingItem !== 'undefined' && thumbCropPendingItem === item){
+      thumbCropPendingItem = null;
+      thumbCropPendingViewFrac = null;
+      hideThumbCropBox();
+    }
+
     items = items.filter(i=>i.id!==item.id);
     card.remove();
     refreshOrderLabels();
@@ -1603,9 +1660,10 @@
     updateTrashPanelVisibility();
   }
 
-  trashClearAllBtn.addEventListener('click', ()=>{
+  trashClearAllBtn.addEventListener('click', async ()=>{
     if(!deletedItems.length) return;
-    if(!confirm(`削除済みの${deletedItems.length}枚を完全に削除します。元に戻せなくなりますが、よろしいですか?`)) return;
+    const ok = await askConfirm(`削除済みの${deletedItems.length}枚を完全に削除します。元に戻せなくなりますが、よろしいですか?`);
+    if(!ok) return;
     deletedItems = [];
     trashGrid.innerHTML = '';
     updateTrashPanelVisibility();
@@ -2168,9 +2226,23 @@
       }
       return Infinity; // essentially no bright pixels at all; no need to restrict
     }
-    gR = Math.min(gR, Math.max(1, maxSafeGain(histR)));
-    gG = Math.min(gG, Math.max(1, maxSafeGain(histG)));
-    gB = Math.min(gB, Math.max(1, maxSafeGain(histB)));
+    if(matchColor){
+      // per-channel gains are intentionally different here, so let the
+      // safety net act independently per channel too
+      gR = Math.min(gR, Math.max(1, maxSafeGain(histR)));
+      gG = Math.min(gG, Math.max(1, maxSafeGain(histG)));
+      gB = Math.min(gB, Math.max(1, maxSafeGain(histB)));
+    }else{
+      // gR/gG/gB started out EQUAL (matchColor is off, so no color shift is
+      // intended) — capping each channel independently here would silently
+      // re-introduce a color shift on any photo whose bright pixels aren't
+      // evenly distributed across channels (e.g. a lot of bright red but
+      // not bright blue). Use ONE shared cap so brightness-only really
+      // means brightness-only.
+      const uniformSafeGain = Math.min(maxSafeGain(histR), maxSafeGain(histG), maxSafeGain(histB));
+      const cappedGain = Math.min(gR, Math.max(1, uniformSafeGain));
+      gR = cappedGain; gG = cappedGain; gB = cappedGain;
+    }
 
     for(let i=0;i<data.length;i+=4){
       data[i]   = Math.min(255, data[i]   * gR);
@@ -2479,6 +2551,7 @@
       await cacheProcessedResult(newItem);
       releaseFullResCanvas(newItem);
 
+      const mergedSourceIds = selected.map(item => item.id);
       selected.forEach(item=>{
         item.selectedForMerge = false;
         item.mergeOrder = null;
@@ -2493,6 +2566,9 @@
           }
         }
       });
+      // record the WHOLE merge (all source photos + the resulting merged
+      // photo) as ONE undoable action, so Ctrl+Z reverses it in a single step
+      pushDeleteHistoryEntry(mergedSourceIds, newItem.id);
 
       refreshMergeOrderBadges();
       updateEmptyMsg();
@@ -2645,6 +2721,7 @@
   const extraBoostValEl = document.getElementById('extraBoostVal');
   extraBoostEl.addEventListener('input', ()=>{
     extraBoostValEl.textContent = parseFloat(extraBoostEl.value).toFixed(2) + '倍';
+    applyLivePreviewFilter();
   });
   extraBoostEl.addEventListener('change', ()=>{
     if(!modalItem) return;
@@ -2671,6 +2748,7 @@
   let modalPreviewBaselineTarget = 150; // the bg-target value that produced the CURRENTLY displayed preview image;
                                           // used to approximate live brightness changes via a CSS filter while
                                           // dragging the slider, without needing a full per-pixel recompute
+  let modalPreviewBaselineBoost = 1; // same idea, but for the extra-boost slider
 
   let modalOpenSnapshot = null; // the bg-correction settings this photo had when the preview was opened —
                                   // lets "元の設定に戻す" restore them even after auto-applying changes
@@ -2713,6 +2791,7 @@
     modalImg.src = item.processedCanvas.toDataURL('image/jpeg', 0.9);
     modalImg.style.filter = ''; // clear any live-preview approximation left over from a previous photo
     modalPreviewBaselineTarget = (item.appliedInfo && item.appliedInfo.mode === 'bg') ? item.appliedInfo.target : parseInt(modalBgOverride.value,10) || 150;
+    modalPreviewBaselineBoost = item.extraBoost || 1;
     modalOverlay.style.display = 'flex';
 
     // reset crop-selection UI state for this photo
@@ -2802,9 +2881,36 @@
     // don't hijack shortcuts while the person is typing in a number field
     if(document.activeElement && document.activeElement.tagName === 'INPUT') return;
 
+    if(e.key === 'Escape'){
+      // cancel whatever crop interaction is currently in progress, in
+      // either the preview modal or the thumbnail grid
+      if(cropModeActive){
+        e.preventDefault();
+        cropCancelBtn.click();
+        return;
+      }
+      if(blurModeActive){
+        e.preventDefault();
+        if(blurDragRectEl){ blurDragRectEl.remove(); blurDragRectEl = null; }
+        blurDragStart = null;
+        blurMoveState = null;
+        setBlurMode(false);
+        return;
+      }
+      if(thumbDragState || thumbMoveState || thumbCropPendingItem){
+        e.preventDefault();
+        thumbDragState = null;
+        thumbMoveState = null;
+        thumbCropPendingItem = null;
+        thumbCropPendingViewFrac = null;
+        hideThumbCropBox();
+      }
+      return;
+    }
+
     if((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey) && e.shiftKey){
       // Ctrl+Shift+Z / Cmd+Shift+Z: redo the most recently undone crop action
-      if(cropRedoStack.length){
+      if(historyRedoStack.length){
         e.preventDefault();
         performCropRedo();
       }
@@ -2813,7 +2919,7 @@
 
     if((e.key === 'y' || e.key === 'Y') && (e.ctrlKey || e.metaKey) && !e.shiftKey){
       // Ctrl+Y is a common alias for redo on Windows
-      if(cropRedoStack.length){
+      if(historyRedoStack.length){
         e.preventDefault();
         performCropRedo();
       }
@@ -2823,7 +2929,7 @@
     if((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey) && !e.shiftKey){
       // Ctrl+Z / Cmd+Z: undo the most recent crop action — works whether it
       // was made in the preview modal or via a thumbnail quick-crop
-      if(cropUndoStack.length){
+      if(historyUndoStack.length){
         e.preventDefault();
         performCropUndo();
       }
@@ -2867,9 +2973,14 @@
     // This won't capture the highlight-clipping safety net or color-match
     // nuances exactly, but gives immediate, honest-enough visual feedback
     // while dragging; the precise result still comes from "この設定で再処理".
+    // Combines BOTH the background-target slider and the extra-boost slider,
+    // since either one (or both, mid-drag) can differ from what's currently shown.
     const target = parseInt(modalBgOverride.value, 10) || modalPreviewBaselineTarget;
-    const ratio = target / modalPreviewBaselineTarget;
-    const clamped = Math.max(0.3, Math.min(3, ratio));
+    const targetRatio = target / modalPreviewBaselineTarget;
+    const boost = parseFloat(extraBoostEl.value) || 1;
+    const boostRatio = boost / (modalPreviewBaselineBoost || 1);
+    const combined = targetRatio * boostRatio;
+    const clamped = Math.max(0.3, Math.min(4, combined));
     modalImg.style.filter = `brightness(${clamped.toFixed(3)})`;
   }
 
@@ -2909,6 +3020,10 @@
 
   document.getElementById('modalRotateLeft').addEventListener('click', async ()=>{
     if(!modalItem) return;
+    // an in-progress (unconfirmed) crop selection is measured in screen
+    // pixels against the CURRENT orientation — rotating invalidates it, so
+    // cancel it rather than risk confirming a now-misaligned region later
+    if(cropModeActive) cropCancelBtn.click();
     modalItem.rotation = ((modalItem.rotation || 0) - 90 + 360) % 360;
     const ok = await ensureBaseCanvasLoaded(modalItem);
     if(ok){
@@ -2919,6 +3034,7 @@
   });
   document.getElementById('modalRotateRight').addEventListener('click', async ()=>{
     if(!modalItem) return;
+    if(cropModeActive) cropCancelBtn.click();
     modalItem.rotation = ((modalItem.rotation || 0) + 90) % 360;
     const ok = await ensureBaseCanvasLoaded(modalItem);
     if(ok){
@@ -2928,49 +3044,66 @@
     }
   });
 
+  let reprocessToken = 0; // bumped on every call; lets an overlapping older
+                            // call detect it's been superseded and bail out
+                            // before overwriting a newer result
+
   async function reprocessModalItem(){
     if(!modalItem) return;
-    modalItem.overrides = modalItem.overrides || {};
-    modalItem.overrides.bgTarget = modalBgUseDefault.checked ? null : parseInt(modalBgOverride.value,10);
-    modalItem.overrides.colorMatch = modalColorMatchEl.checked;
-    modalItem.overrides.autoCorrect = modalAutoCorrectEnabledEl.checked;
+    const targetItem = modalItem; // freeze which photo this run is for —
+                                    // modalItem itself may change (e.g. the
+                                    // person navigates away) before this finishes
+    const myToken = ++reprocessToken;
 
-    modalItem.cardEl.classList.add('processing');
+    targetItem.overrides = targetItem.overrides || {};
+    targetItem.overrides.bgTarget = modalBgUseDefault.checked ? null : parseInt(modalBgOverride.value,10);
+    targetItem.overrides.colorMatch = modalColorMatchEl.checked;
+    targetItem.overrides.autoCorrect = modalAutoCorrectEnabledEl.checked;
+
+    targetItem.cardEl.classList.add('processing');
     const applyBtn = document.getElementById('modalApplyBtn');
     applyBtn.disabled = true;
     applyBtn.textContent = '再処理中…';
     try{
-      const ok = await ensureSrcImgLoaded(modalItem);
+      const ok = await ensureSrcImgLoaded(targetItem);
+      if(myToken !== reprocessToken) return; // a newer reprocess started meanwhile — its result wins instead
       if(!ok){
-        markError(modalItem, 'この写真の再読み込みに失敗しました。もう一度読み込み直してください。');
-        closeFineTuneModal();
+        markError(targetItem, 'この写真の再読み込みに失敗しました。もう一度読み込み直してください。');
+        if(modalItem === targetItem) closeFineTuneModal();
         return;
       }
-      process(modalItem);
-      await cacheProcessedResult(modalItem);
-      releaseSrcImg(modalItem);
-      modalImg.src = modalItem.processedCanvas.toDataURL('image/jpeg', 0.9);
-      modalImg.style.filter = ''; // the new image already reflects the real computation — drop the approximation
-      modalPreviewBaselineTarget = (modalItem.appliedInfo && modalItem.appliedInfo.mode === 'bg') ? modalItem.appliedInfo.target : modalPreviewBaselineTarget;
-      renderBlurRegions();
-      const infoLabel = document.getElementById('modalInfoLabel');
-      if(infoLabel){
-        const info = modalItem.appliedInfo;
-        if(info && info.mode === 'bg'){
-          infoLabel.textContent = `BG ${info.bgLum}→${info.target}`;
-        }else if(info && info.mode === 'hist' && info.headroom > 0){
-          infoLabel.textContent = 'HL ' + info.headroom;
-        }else{
-          infoLabel.textContent = '';
+      process(targetItem);
+      await cacheProcessedResult(targetItem);
+      if(myToken !== reprocessToken) return; // superseded while processing — don't clobber the newer result
+      releaseSrcImg(targetItem);
+      if(modalItem === targetItem){
+        modalImg.src = targetItem.processedCanvas.toDataURL('image/jpeg', 0.9);
+        modalImg.style.filter = ''; // the new image already reflects the real computation — drop the approximation
+        modalPreviewBaselineTarget = (targetItem.appliedInfo && targetItem.appliedInfo.mode === 'bg') ? targetItem.appliedInfo.target : modalPreviewBaselineTarget;
+        modalPreviewBaselineBoost = targetItem.extraBoost || 1;
+        renderBlurRegions();
+        const infoLabel = document.getElementById('modalInfoLabel');
+        if(infoLabel){
+          const info = targetItem.appliedInfo;
+          if(info && info.mode === 'bg'){
+            infoLabel.textContent = `BG ${info.bgLum}→${info.target}`;
+          }else if(info && info.mode === 'hist' && info.headroom > 0){
+            infoLabel.textContent = 'HL ' + info.headroom;
+          }else{
+            infoLabel.textContent = '';
+          }
         }
       }
     }catch(err){
-      console.error('fine-tune reprocess error:', modalItem.file.name, err);
-      markError(modalItem, '再処理に失敗しました: ' + err.message);
-      closeFineTuneModal();
+      if(myToken !== reprocessToken) return; // don't surface an error for a run that's already been superseded
+      console.error('fine-tune reprocess error:', targetItem.file.name, err);
+      markError(targetItem, '再処理に失敗しました: ' + err.message);
+      if(modalItem === targetItem) closeFineTuneModal();
     }finally{
-      applyBtn.disabled = false;
-      applyBtn.textContent = '元の設定に戻す';
+      if(myToken === reprocessToken){
+        applyBtn.disabled = false;
+        applyBtn.textContent = '元の設定に戻す';
+      }
     }
   }
 
@@ -2999,6 +3132,16 @@
   const cropConfirmBar = document.getElementById('cropConfirmBar');
   const cropResetBtn = document.getElementById('cropResetBtn');
   const cropAspectLock = document.getElementById('cropAspectLock');
+  const gridCropAspectLock = document.getElementById('gridCropAspectLock');
+  // two checkboxes, one shared setting — this one lives in the main grid so
+  // it can be toggled without opening a photo first; the other lives inside
+  // the modal's crop panel. Keep them mirrored in both directions.
+  cropAspectLock.addEventListener('change', ()=>{
+    gridCropAspectLock.checked = cropAspectLock.checked;
+  });
+  gridCropAspectLock.addEventListener('change', ()=>{
+    cropAspectLock.checked = gridCropAspectLock.checked;
+  });
   const cropPresetVertHalf = document.getElementById('cropPresetVertHalf');
   const cropPresetHorizHalf = document.getElementById('cropPresetHorizHalf');
   const cropPresetLastUsed = document.getElementById('cropPresetLastUsed');
@@ -3301,6 +3444,21 @@
   //    last-used range centered on the click, same as before
   let thumbDragState = null; // {item, imgEl, startClientX, startClientY, rectLeft, rectTop, rectWidth, rectHeight, moved, lastRectFrac}
   let thumbMoveState = null; // {item, imgEl, startClientX, startClientY, rectWidth, rectHeight, origX, origY, w, h, curX, curY, moved} — dragging an already-drawn pending range to reposition it
+
+  // If the mouse button is released outside the browser entirely (e.g. the
+  // person alt-tabs away mid-drag), no mouseup ever reaches this page, and
+  // thumbDragState/thumbMoveState would otherwise stay stuck forever,
+  // blocking all further Ctrl-crop interaction. Recover on regaining focus.
+  function recoverFromStuckThumbGesture(){
+    if(thumbDragState || thumbMoveState){
+      thumbDragState = null;
+      thumbMoveState = null;
+    }
+  }
+  window.addEventListener('blur', recoverFromStuckThumbGesture);
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.hidden) recoverFromStuckThumbGesture();
+  });
   let suppressNextThumbClick = false; // set right after a genuine move-drag, so the native 'click' that follows doesn't also confirm the box
   let thumbCropPendingItem = null;      // item that currently has a drawn-but-unconfirmed range
   let thumbCropPendingViewFrac = null;  // {x,y,w,h} for that range, in the item's current (rotated) view fractions
@@ -3334,8 +3492,7 @@
     const y1 = clamp(thumbDragState.startClientY-rectTop, 0, rectHeight);
     const x2 = clamp(e.clientX-rectLeft, 0, rectWidth);
     const y2 = clamp(e.clientY-rectTop, 0, rectHeight);
-    const x = Math.min(x1,x2), y = Math.min(y1,y2);
-    const w = Math.abs(x2-x1), h = Math.abs(y2-y1);
+    let w = Math.abs(x2-x1), h = Math.abs(y2-y1);
     // use the RAW (unclamped) mouse movement to detect a genuine drag —
     // using the clamped coordinates here would wrongly read as "no
     // movement" whenever a drag starts and ends off-photo in the same
@@ -3345,6 +3502,21 @@
     const rawDy = e.clientY - thumbDragState.startClientY;
     if(Math.hypot(rawDx, rawDy) > 5) thumbDragState.moved = true;
     if(!thumbDragState.moved) return;
+
+    if(cropAspectLock.checked && rectHeight > 0){
+      // keep the same aspect ratio as the photo currently displays — this
+      // is already rotation-aware, since rectWidth/rectHeight come from the
+      // thumbnail's own rendered <img> box, whatever its current rotation
+      const aspectRatio = rectWidth / rectHeight;
+      if(w / (h||1) > aspectRatio) w = h * aspectRatio; else h = w / aspectRatio;
+    }
+    const dirX = x2 >= x1 ? 1 : -1;
+    const dirY = y2 >= y1 ? 1 : -1;
+    let x = dirX > 0 ? x1 : x1 - w;
+    let y = dirY > 0 ? y1 : y1 - h;
+    x = clamp(x, 0, rectWidth - w);
+    y = clamp(y, 0, rectHeight - h);
+
     thumbDragState.lastRectFrac = {x:x/rectWidth, y:y/rectHeight, w:w/rectWidth, h:h/rectHeight};
     showThumbCropBoxOn(thumbDragState.imgEl, x/rectWidth, y/rectHeight, w/rectWidth, h/rectHeight);
   });
@@ -3435,9 +3607,17 @@
   async function applyCropToThumbnailItem(item, viewFrac){
     if(!item.processed) return;
     const card = item.cardEl;
+    // per-item token: if this same photo gets a second, overlapping quick-crop
+    // call (e.g. two rapid Ctrl+clicks) before this one finishes, the older
+    // call must recognize it's been superseded and bail out — otherwise it
+    // can both record the wrong "prior" state for undo AND overwrite the
+    // newer result once it finally completes.
+    item._cropOpToken = (item._cropOpToken || 0) + 1;
+    const myToken = item._cropOpToken;
     card.classList.add('processing');
     try{
       const ok = await ensureSrcImgLoaded(item);
+      if(myToken !== item._cropOpToken) return; // superseded while loading
       if(!ok){
         markError(item, 'この写真の再読み込みに失敗しました。もう一度読み込み直してください。');
         return;
@@ -3463,13 +3643,15 @@
 
       process(item); // also re-renders the thumbnail and clears 'processing' on success
       await cacheProcessedResult(item);
+      if(myToken !== item._cropOpToken) return; // superseded while processing — don't clobber the newer result
       releaseSrcImg(item);
       releaseFullResCanvas(item); // no modal is open for this item — don't keep the full canvas resident
     }catch(err){
+      if(myToken !== item._cropOpToken) return; // don't surface an error for a run that's already been superseded
       console.error('[quick crop] failed:', item.file.name, err);
       markError(item, 'クイックトリミングに失敗しました: ' + (err && err.message ? err.message : err));
     }finally{
-      card.classList.remove('processing');
+      if(myToken === item._cropOpToken) card.classList.remove('processing');
     }
   }
 
@@ -3516,24 +3698,37 @@
     cropPresetLastUsed.title = '写真をCtrl+クリック(Macは⌘+クリック)すると、クリック位置を中心に同じサイズで即適用。Ctrl+ドラッグなら新しい範囲を選択できます';
   }
 
-  // Shared undo/redo history for BOTH the modal's crop tools and the
-  // thumbnail quick-crop shortcuts. Each entry is {itemId, manualCrop} —
-  // the OTHER state to switch to when that entry is used. Works whether or
-  // not a modal happens to be open for the affected item.
-  const CROP_HISTORY_LIMIT = 5;
-  let cropUndoStack = [];
-  let cropRedoStack = [];
+  // Shared undo/redo history covering crop changes AND delete/merge
+  // actions, in one single timeline — Ctrl+Z undoes whichever kind of
+  // action was most recent. Each entry is tagged by type:
+  //   {type:'crop', itemId, manualCrop}      — manualCrop is the state to switch TO
+  //   {type:'delete', deletedIds, mergedResultId}  — the photo(s) sent to the
+  //     trash together (a plain delete = 1 id; a merge = all its source
+  //     ids), plus the id of the synthesized merged photo, if any. Undo and
+  //     redo of a 'delete' entry both just swap restore<->re-delete, so the
+  //     SAME entry object is reused in both directions.
+  const HISTORY_LIMIT = 5;
+  let historyUndoStack = [];
+  let historyRedoStack = [];
 
-  function pushCropUndoSnapshot(itemId, manualCropBeforeAction){
-    cropUndoStack.push({itemId, manualCrop: manualCropBeforeAction ? {...manualCropBeforeAction} : null});
-    if(cropUndoStack.length > CROP_HISTORY_LIMIT) cropUndoStack.shift();
-    cropRedoStack = []; // a genuinely new action invalidates whatever could have been redone
+  function pushHistoryEntry(entry){
+    historyUndoStack.push(entry);
+    if(historyUndoStack.length > HISTORY_LIMIT) historyUndoStack.shift();
+    historyRedoStack = []; // a genuinely new action invalidates whatever could have been redone
     updateCropUndoRedoButtons();
   }
 
+  function pushCropUndoSnapshot(itemId, manualCropBeforeAction){
+    pushHistoryEntry({type:'crop', itemId, manualCrop: manualCropBeforeAction ? {...manualCropBeforeAction} : null});
+  }
+
+  function pushDeleteHistoryEntry(deletedIds, mergedResultId){
+    pushHistoryEntry({type:'delete', deletedIds:[...deletedIds], mergedResultId: mergedResultId || null});
+  }
+
   function updateCropUndoRedoButtons(){
-    cropUndoBtn.disabled = cropUndoStack.length === 0;
-    cropRedoBtn.disabled = cropRedoStack.length === 0;
+    cropUndoBtn.disabled = historyUndoStack.length === 0;
+    cropRedoBtn.disabled = historyRedoStack.length === 0;
   }
 
   // Reprocesses `item` after its manualCrop was changed directly (by undo
@@ -3545,52 +3740,114 @@
       await reprocessModalItem();
       return;
     }
+    // same per-item token guard as applyCropToThumbnailItem — rapid repeated
+    // Ctrl+Z/Ctrl+Shift+Z on the same photo must not let an older step
+    // finish after, and overwrite, a newer one
+    item._cropOpToken = (item._cropOpToken || 0) + 1;
+    const myToken = item._cropOpToken;
     const card = item.cardEl;
     if(card) card.classList.add('processing');
     try{
       const ok = await ensureSrcImgLoaded(item);
+      if(myToken !== item._cropOpToken) return; // superseded while loading
       if(!ok){
         markError(item, 'この写真の再読み込みに失敗しました。もう一度読み込み直してください。');
         return;
       }
       process(item);
       await cacheProcessedResult(item);
+      if(myToken !== item._cropOpToken) return; // superseded while processing
       releaseSrcImg(item);
       releaseFullResCanvas(item);
     }catch(err){
+      if(myToken !== item._cropOpToken) return;
       console.error('[crop undo/redo] failed:', item.file && item.file.name, err);
       markError(item, '処理に失敗しました: ' + (err && err.message ? err.message : err));
     }finally{
-      if(card) card.classList.remove('processing');
+      if(card && myToken === item._cropOpToken) card.classList.remove('processing');
     }
   }
 
   async function performCropUndo(){
-    if(!cropUndoStack.length) return;
-    const snap = cropUndoStack.pop();
-    const item = (modalItem && modalItem.id === snap.itemId) ? modalItem : items.find(it=>it.id === snap.itemId);
-    if(!item){ updateCropUndoRedoButtons(); return; }
+    if(!historyUndoStack.length) return;
+    const entry = historyUndoStack.pop();
+
+    if(entry.type === 'delete'){
+      // if the trash was permanently emptied since this action, some (or
+      // all) of these photos are gone for good — restoring only PART of a
+      // merge would silently lose the rest, so verify everything needed is
+      // still there before touching anything
+      const allRestorable = entry.deletedIds.every(id => deletedItems.some(d=>d.item.id === id));
+      if(!allRestorable){
+        alert('既に完全に削除された写真を含む為、復元できません。');
+        updateCropUndoRedoButtons();
+        return;
+      }
+      // bring back every photo that was sent to the trash together...
+      entry.deletedIds.forEach(id => restoreFromTrash(id));
+      // ...and if this was a merge, undo it fully by also removing the
+      // synthesized merged photo it produced (reversibly, via the trash —
+      // NOT pushing a new history entry, since this whole thing IS one)
+      if(entry.mergedResultId){
+        const mergedItem = items.find(it=>it.id === entry.mergedResultId);
+        if(mergedItem && mergedItem.cardEl) deleteItemWithUndo(mergedItem, mergedItem.cardEl);
+      }
+      historyRedoStack.push(entry); // symmetric: redoing just re-applies the same delete
+      if(historyRedoStack.length > HISTORY_LIMIT) historyRedoStack.shift();
+      updateCropUndoRedoButtons();
+      return;
+    }
+
+    // type === 'crop'
+    const item = (modalItem && modalItem.id === entry.itemId) ? modalItem : items.find(it=>it.id === entry.itemId);
+    if(!item){ updateCropUndoRedoButtons(); return; } // e.g. the photo was since deleted — nothing to restore this crop onto
 
     // the CURRENT state becomes redoable
-    cropRedoStack.push({itemId: item.id, manualCrop: item.manualCrop ? {...item.manualCrop} : null});
-    if(cropRedoStack.length > CROP_HISTORY_LIMIT) cropRedoStack.shift();
+    historyRedoStack.push({type:'crop', itemId: item.id, manualCrop: item.manualCrop ? {...item.manualCrop} : null});
+    if(historyRedoStack.length > HISTORY_LIMIT) historyRedoStack.shift();
 
-    item.manualCrop = snap.manualCrop;
+    item.manualCrop = entry.manualCrop;
     updateCropUndoRedoButtons();
     await reprocessItemAfterHistoryChange(item);
   }
 
   async function performCropRedo(){
-    if(!cropRedoStack.length) return;
-    const snap = cropRedoStack.pop();
-    const item = (modalItem && modalItem.id === snap.itemId) ? modalItem : items.find(it=>it.id === snap.itemId);
+    if(!historyRedoStack.length) return;
+    const entry = historyRedoStack.pop();
+
+    if(entry.type === 'delete'){
+      // if the merged photo (or any of the source photos) was permanently
+      // removed since the undo, redoing would only half-apply — verify
+      // everything needed is still where expected first
+      const sourcesStillLive = entry.deletedIds.every(id => items.some(it=>it.id === id));
+      const mergedStillInTrash = !entry.mergedResultId || deletedItems.some(d=>d.item.id === entry.mergedResultId);
+      if(!sourcesStillLive || !mergedStillInTrash){
+        alert('既に完全に削除された写真を含む為、やり直せません。');
+        updateCropUndoRedoButtons();
+        return;
+      }
+      // re-apply the same delete: send each of those photos back to the trash...
+      entry.deletedIds.forEach(id => {
+        const it = items.find(x=>x.id === id);
+        if(it && it.cardEl) deleteItemWithUndo(it, it.cardEl);
+      });
+      // ...and if it was a merge, bring the merged photo itself back
+      if(entry.mergedResultId) restoreFromTrash(entry.mergedResultId);
+      historyUndoStack.push(entry);
+      if(historyUndoStack.length > HISTORY_LIMIT) historyUndoStack.shift();
+      updateCropUndoRedoButtons();
+      return;
+    }
+
+    // type === 'crop'
+    const item = (modalItem && modalItem.id === entry.itemId) ? modalItem : items.find(it=>it.id === entry.itemId);
     if(!item){ updateCropUndoRedoButtons(); return; }
 
     // the CURRENT (pre-redo) state becomes undoable again
-    cropUndoStack.push({itemId: item.id, manualCrop: item.manualCrop ? {...item.manualCrop} : null});
-    if(cropUndoStack.length > CROP_HISTORY_LIMIT) cropUndoStack.shift();
+    historyUndoStack.push({type:'crop', itemId: item.id, manualCrop: item.manualCrop ? {...item.manualCrop} : null});
+    if(historyUndoStack.length > HISTORY_LIMIT) historyUndoStack.shift();
 
-    item.manualCrop = snap.manualCrop;
+    item.manualCrop = entry.manualCrop;
     updateCropUndoRedoButtons();
     await reprocessItemAfterHistoryChange(item);
   }
