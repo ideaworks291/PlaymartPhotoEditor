@@ -170,11 +170,17 @@
     color:var(--text);
     cursor:pointer;
     transition:background .15s, border-color .15s;
+    user-select:none; /* rapid/repeated clicks could otherwise text-select the button's own label */
   }
   button:hover{border-color:var(--text-dim);}
   button.primary{background:var(--accent);border-color:var(--accent);color:#ffffff;}
   button.primary:hover{background:#CD389C;}
   button:disabled{opacity:.4;cursor:not-allowed;}
+  /* keep a visible focus indicator for real keyboard (Tab) navigation, but
+     not the default browser ring that can otherwise appear after ordinary
+     rapid mouse clicks — same idea as the .modal-box fix above */
+  button:focus{outline:none;}
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
 
   .status-bar{
     display:flex;
@@ -468,6 +474,10 @@
     z-index:5;
     display:flex;align-items:center;justify-content:center;
     transition:background .15s, border-color .15s, color .15s, opacity .15s;
+    user-select:none; /* repeated/rapid clicks could otherwise text-select the ‹/› character itself */
+  }
+  .modal-nav-btn:focus, .modal-nav-btn:focus-visible{
+    outline:none; /* our own click handler already does the job; the default focus ring here is just visual noise on repeated clicks */
   }
   .modal-nav-btn:hover{background:var(--accent);border-color:var(--accent);color:#ffffff;}
   .modal-nav-btn:disabled{opacity:.2;cursor:not-allowed;}
@@ -482,6 +492,14 @@
     max-height:90vh;
     overflow:auto;
     box-shadow:0 20px 60px rgba(0,0,0,.5);
+  }
+  /* .modal-box is a scrollable container, so browsers make it keyboard-
+     focusable by default (so arrow keys/Page Down can scroll it) even
+     without an explicit tabindex. Arrow-key photo navigation is already
+     handled by our own keydown listener, so the browser's default focus
+     ring around the whole box is just unwanted visual noise here. */
+  .modal-box:focus, .modal-box:focus-visible{
+    outline:none;
   }
   .modal-header{
     display:flex;justify-content:space-between;align-items:center;
@@ -562,6 +580,22 @@
     box-shadow:0 0 0 1000px rgba(0,0,0,.5);
     pointer-events:none;
     z-index:8;
+  }
+  /* subtle center crosshair — makes it easier to eyeball exactly where the
+     middle of the box lands (e.g. on a serial number) before confirming */
+  .ctrl-crop-preview::before, .ctrl-crop-preview::after,
+  .thumb-crop-box::before, .thumb-crop-box::after{
+    content:'';
+    position:absolute;
+    pointer-events:none;
+  }
+  .ctrl-crop-preview::before, .thumb-crop-box::before{
+    left:0; right:0; top:50%;
+    border-top:1px dashed rgba(255,255,255,.55);
+  }
+  .ctrl-crop-preview::after, .thumb-crop-box::after{
+    top:0; bottom:0; left:50%;
+    border-left:1px dashed rgba(255,255,255,.55);
   }
   .blur-region-remove{
     position:absolute;
@@ -729,7 +763,7 @@
               </div>
               <div class="ctrl">
                 <div class="toggle-row">
-                  <input type="checkbox" id="bgColorMatch" checked>
+                  <input type="checkbox" id="bgColorMatch">
                   <span>背景の色みも同じ色に揃える</span>
                 </div>
                 <div style="font-size:11px;color:var(--text-dim);margin-top:6px;line-height:1.5;">
