@@ -3706,6 +3706,7 @@
       item.blurRegions = item.blurRegions || [];
       item.blurRegions.push(canonicalFrac);
       item.blurStrength = parseInt(blurStrengthEl.value, 10) || 15;
+      pushHistoryEntry({type:'blur-add', itemId: item.id, region: {...canonicalFrac}});
 
       process(item);
       await cacheProcessedResult(item);
@@ -3942,6 +3943,14 @@
     }
   }
 
+  // small-tolerance comparison for blur-region rects, used to find the
+  // right region to remove/re-add during undo/redo of a quick-blur add
+  function regionsMatch(a, b){
+    if(!a || !b) return false;
+    const eps = 0.0005;
+    return Math.abs(a.x-b.x) < eps && Math.abs(a.y-b.y) < eps && Math.abs(a.w-b.w) < eps && Math.abs(a.h-b.h) < eps;
+  }
+
   async function performCropUndo(){
     if(!historyUndoStack.length) return;
     const entry = historyUndoStack.pop();
@@ -3969,6 +3978,37 @@
       historyRedoStack.push(entry); // symmetric: redoing just re-applies the same delete
       if(historyRedoStack.length > HISTORY_LIMIT) historyRedoStack.shift();
       updateCropUndoRedoButtons();
+      return;
+    }
+
+    if(entry.type === 'blur-add'){
+      const item = (modalItem && modalItem.id === entry.itemId) ? modalItem : items.find(it=>it.id === entry.itemId);
+      if(!item || !item.blurRegions){ updateCropUndoRedoButtons(); return; } // e.g. the photo was since deleted
+      // remove the matching region — normally the last one added, but fall
+      // back to searching in case something else changed the list meanwhile
+      let idx = item.blurRegions.length - 1;
+      if(idx < 0 || !regionsMatch(item.blurRegions[idx], entry.region)){
+        idx = item.blurRegions.map(r=>regionsMatch(r, entry.region)).lastIndexOf(true);
+      }
+      if(idx < 0){ updateCropUndoRedoButtons(); return; } // already gone somehow — nothing to undo
+      item.blurRegions.splice(idx, 1);
+      historyRedoStack.push(entry); // symmetric: redoing just re-adds the same region
+      if(historyRedoStack.length > HISTORY_LIMIT) historyRedoStack.shift();
+      updateCropUndoRedoButtons();
+      await reprocessItemAfterHistoryChange(item);
+      return;
+    }
+
+    if(entry.type === 'blur-remove'){
+      // mirror of 'blur-add': undoing a removal means adding it back
+      const item = (modalItem && modalItem.id === entry.itemId) ? modalItem : items.find(it=>it.id === entry.itemId);
+      if(!item){ updateCropUndoRedoButtons(); return; }
+      item.blurRegions = item.blurRegions || [];
+      item.blurRegions.push({...entry.region});
+      historyRedoStack.push(entry);
+      if(historyRedoStack.length > HISTORY_LIMIT) historyRedoStack.shift();
+      updateCropUndoRedoButtons();
+      await reprocessItemAfterHistoryChange(item);
       return;
     }
 
@@ -4010,6 +4050,35 @@
       historyUndoStack.push(entry);
       if(historyUndoStack.length > HISTORY_LIMIT) historyUndoStack.shift();
       updateCropUndoRedoButtons();
+      return;
+    }
+
+    if(entry.type === 'blur-add'){
+      const item = (modalItem && modalItem.id === entry.itemId) ? modalItem : items.find(it=>it.id === entry.itemId);
+      if(!item){ updateCropUndoRedoButtons(); return; } // e.g. the photo was since deleted
+      item.blurRegions = item.blurRegions || [];
+      item.blurRegions.push({...entry.region});
+      historyUndoStack.push(entry);
+      if(historyUndoStack.length > HISTORY_LIMIT) historyUndoStack.shift();
+      updateCropUndoRedoButtons();
+      await reprocessItemAfterHistoryChange(item);
+      return;
+    }
+
+    if(entry.type === 'blur-remove'){
+      // mirror of 'blur-add': redoing a removal means removing it again
+      const item = (modalItem && modalItem.id === entry.itemId) ? modalItem : items.find(it=>it.id === entry.itemId);
+      if(!item || !item.blurRegions){ updateCropUndoRedoButtons(); return; }
+      let idx = item.blurRegions.length - 1;
+      if(idx < 0 || !regionsMatch(item.blurRegions[idx], entry.region)){
+        idx = item.blurRegions.map(r=>regionsMatch(r, entry.region)).lastIndexOf(true);
+      }
+      if(idx < 0){ updateCropUndoRedoButtons(); return; }
+      item.blurRegions.splice(idx, 1);
+      historyUndoStack.push(entry);
+      if(historyUndoStack.length > HISTORY_LIMIT) historyUndoStack.shift();
+      updateCropUndoRedoButtons();
+      await reprocessItemAfterHistoryChange(item);
       return;
     }
 
@@ -4327,7 +4396,9 @@
       removeBtn.title = 'このぼかしを削除';
       removeBtn.addEventListener('click', (e)=>{
         e.stopPropagation();
+        const removedRegion = {...modalItem.blurRegions[idx]};
         modalItem.blurRegions.splice(idx, 1);
+        pushHistoryEntry({type:'blur-remove', itemId: modalItem.id, region: removedRegion});
         renderBlurRegions();
         reprocessModalItem();
       });
