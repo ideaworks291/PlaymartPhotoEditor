@@ -562,8 +562,8 @@
   }
   .blur-region{
     position:absolute;
-    border:2px solid var(--accent);
-    background:rgba(192,0,129,.15);
+    border:2px solid #38bdf8;
+    background:rgba(56,189,248,.18);
     pointer-events:auto;
     cursor:move;
   }
@@ -580,6 +580,13 @@
     border:2px dashed var(--accent);
     background:rgba(192,0,129,.25);
     box-shadow:0 0 0 1000px rgba(0,0,0,.5);
+    pointer-events:none;
+    z-index:8;
+  }
+  .thumb-blur-box{
+    position:absolute;
+    border:2px solid #38bdf8;
+    background:rgba(56,189,248,.28);
     pointer-events:none;
     z-index:8;
   }
@@ -601,18 +608,20 @@
   }
   .blur-region-remove{
     position:absolute;
-    top:-11px;right:-11px;
-    width:22px;height:22px;
+    top:-9px;right:-9px;
+    width:18px;height:18px;
+    padding:0;
+    box-sizing:border-box;
     border-radius:50%;
-    background:var(--accent);
+    background:#38bdf8;
     border:2px solid #ffffff;
     color:#ffffff;
-    font-size:13px;
+    font-size:11px;
     line-height:1;
     cursor:pointer;
     display:flex;align-items:center;justify-content:center;
   }
-  .blur-region-remove:hover{background:#e0009a;}
+  .blur-region-remove:hover{background:#0ea5e9;}
   .crop-selection{
     position:absolute;
     border:2px solid var(--accent);
@@ -953,7 +962,7 @@
         <div class="ctrl">
           <label>ぼかし(シリアルナンバーなど隠したい部分)</label>
           <div class="btnrow" style="margin-top:6px;">
-            <button id="blurModeBtn" type="button">ドラッグで範囲を追加</button>
+            <button id="blurModeBtn" type="button" title="写真をAlt+ドラッグ(Macは⌥+ドラッグ)でも同じことができます">ドラッグで範囲を追加</button>
             <button id="blurClearAllBtn" type="button">全て削除</button>
           </div>
           <div class="valline" style="margin-top:8px;"><span>弱め</span><span id="blurStrengthVal">15</span><span>強め</span></div>
@@ -1427,7 +1436,24 @@
 
     imgboxEl.addEventListener('mousedown', (e)=>{
       if(!item.processed) return;
-      if(thumbDragState || thumbMoveState) return; // don't let a stray mousedown start a second, overlapping gesture while one is already in progress
+      if(thumbDragState || thumbMoveState || thumbBlurDragState) return; // don't let a stray mousedown start a second, overlapping gesture while one is already in progress
+
+      if(e.altKey && !e.ctrlKey && !e.metaKey){
+        // Alt+drag: quick-add a blur region directly on the thumbnail, no
+        // preview window needed. Strength always follows whatever the
+        // preview window's blur-strength slider currently shows — it's
+        // rarely changed, so there's no need for a per-region prompt.
+        if(e.target.closest('.rotate-controls')) return;
+        e.preventDefault();
+        const rect = cardImgEl.getBoundingClientRect();
+        thumbBlurDragState = {
+          item, imgEl: cardImgEl,
+          startClientX: e.clientX, startClientY: e.clientY,
+          rectLeft: rect.left, rectTop: rect.top, rectWidth: rect.width, rectHeight: rect.height,
+          moved: false
+        };
+        return;
+      }
 
       if(e.ctrlKey || e.metaKey){
         e.preventDefault();
@@ -1466,7 +1492,7 @@
     });
 
     imgboxEl.addEventListener('mousemove', (e)=>{
-      if(thumbDragState || thumbMoveState) return; // an active drag or move (on this or another card) takes priority
+      if(thumbDragState || thumbMoveState || thumbBlurDragState) return; // an active drag or move (on this or another card) takes priority
       if(!(e.ctrlKey || e.metaKey) || !item.processed) return;
       if(thumbCropPendingItem === item) return; // this card already has a drawn-but-unconfirmed box; don't override it with the hover preview
 
@@ -1494,7 +1520,7 @@
     });
 
     imgboxEl.addEventListener('mouseleave', ()=>{
-      if(thumbDragState || thumbMoveState || thumbCropPendingItem === item) return; // keep an active drag/move or a pending box visible
+      if(thumbDragState || thumbMoveState || thumbBlurDragState || thumbCropPendingItem === item) return; // keep an active drag/move or a pending box visible
       hideThumbCropBox();
     });
 
@@ -1521,7 +1547,7 @@
         }
       }
 
-      if(e.ctrlKey || e.metaKey) return; // any other Ctrl-held interaction is fully handled by the dedicated mousedown/mouseup logic instead
+      if(e.ctrlKey || e.metaKey || e.altKey) return; // any other Ctrl/Alt-held interaction is fully handled by the dedicated mousedown/mouseup logic instead
       try{
         const ok = await ensureBaseCanvasLoaded(item);
         if(ok){
@@ -2595,6 +2621,8 @@
           item.cardEl.classList.remove('merge-selected');
           const mergeChk = item.cardEl.querySelector('.merge-chk');
           if(mergeChk) mergeChk.checked = false; // otherwise this stale checked state resurfaces if the photo is later restored from trash
+          const mergeBadge = item.cardEl.querySelector('.merge-order-badge');
+          if(mergeBadge) mergeBadge.style.display = 'none'; // same reasoning — refreshMergeOrderBadges() below can no longer reach this card once it's been moved to the trash
           try{
             deleteItemWithUndo(item, item.cardEl);
           }catch(err){
@@ -2947,6 +2975,11 @@
         thumbCropPendingItem = null;
         thumbCropPendingViewFrac = null;
         hideThumbCropBox();
+      }
+      if(thumbBlurDragState){
+        e.preventDefault();
+        thumbBlurDragState = null;
+        hideThumbBlurBox();
       }
       return;
     }
@@ -3494,15 +3527,17 @@
   //    last-used range centered on the click, same as before
   let thumbDragState = null; // {item, imgEl, startClientX, startClientY, rectLeft, rectTop, rectWidth, rectHeight, moved, lastRectFrac}
   let thumbMoveState = null; // {item, imgEl, startClientX, startClientY, rectWidth, rectHeight, origX, origY, w, h, curX, curY, moved} — dragging an already-drawn pending range to reposition it
+  let thumbBlurDragState = null; // {item, imgEl, startClientX, startClientY, rectLeft, rectTop, rectWidth, rectHeight, moved, lastRectFrac} — Alt+drag to quick-add a blur region directly on a thumbnail
 
   // If the mouse button is released outside the browser entirely (e.g. the
   // person alt-tabs away mid-drag), no mouseup ever reaches this page, and
   // thumbDragState/thumbMoveState would otherwise stay stuck forever,
   // blocking all further Ctrl-crop interaction. Recover on regaining focus.
   function recoverFromStuckThumbGesture(){
-    if(thumbDragState || thumbMoveState){
+    if(thumbDragState || thumbMoveState || thumbBlurDragState){
       thumbDragState = null;
       thumbMoveState = null;
+      thumbBlurDragState = null;
     }
   }
   window.addEventListener('blur', recoverFromStuckThumbGesture);
@@ -3533,6 +3568,28 @@
     thumbCropBox.style.width = (wFrac*rect.width) + 'px';
     thumbCropBox.style.height = (hFrac*rect.height) + 'px';
     thumbCropBox.style.display = 'block';
+  }
+
+  const thumbBlurBox = document.createElement('div');
+  thumbBlurBox.className = 'thumb-blur-box';
+  thumbBlurBox.style.display = 'none';
+
+  function hideThumbBlurBox(){
+    thumbBlurBox.style.display = 'none';
+    if(thumbBlurBox.parentNode) thumbBlurBox.parentNode.removeChild(thumbBlurBox);
+  }
+  function showThumbBlurBoxOn(imgEl, xFrac, yFrac, wFrac, hFrac){
+    const imgbox = imgEl.parentElement;
+    if(thumbBlurBox.parentNode !== imgbox) imgbox.appendChild(thumbBlurBox);
+    const rect = imgEl.getBoundingClientRect();
+    const boxRect = imgbox.getBoundingClientRect();
+    const offX = rect.left - boxRect.left;
+    const offY = rect.top - boxRect.top;
+    thumbBlurBox.style.left = (offX + xFrac*rect.width) + 'px';
+    thumbBlurBox.style.top = (offY + yFrac*rect.height) + 'px';
+    thumbBlurBox.style.width = (wFrac*rect.width) + 'px';
+    thumbBlurBox.style.height = (hFrac*rect.height) + 'px';
+    thumbBlurBox.style.display = 'block';
   }
 
   window.addEventListener('mousemove', (e)=>{
@@ -3596,6 +3653,73 @@
     // if it didn't move, this was just a click — the normal 'click' handler
     // (which fires right after this) confirms it in place as usual
   });
+
+  window.addEventListener('mousemove', (e)=>{
+    if(!thumbBlurDragState) return;
+    const {rectLeft, rectTop, rectWidth, rectHeight} = thumbBlurDragState;
+    const x1 = clamp(thumbBlurDragState.startClientX-rectLeft, 0, rectWidth);
+    const y1 = clamp(thumbBlurDragState.startClientY-rectTop, 0, rectHeight);
+    const x2 = clamp(e.clientX-rectLeft, 0, rectWidth);
+    const y2 = clamp(e.clientY-rectTop, 0, rectHeight);
+    const x = Math.min(x1,x2), y = Math.min(y1,y2);
+    const w = Math.abs(x2-x1), h = Math.abs(y2-y1);
+    // same reasoning as the crop drag: use RAW mouse movement to detect a
+    // genuine drag, not the clamped coordinates (which can read as "no
+    // movement" for an off-photo start/end in the same corner)
+    const rawDx = e.clientX - thumbBlurDragState.startClientX;
+    const rawDy = e.clientY - thumbBlurDragState.startClientY;
+    if(Math.hypot(rawDx, rawDy) > 5) thumbBlurDragState.moved = true;
+    if(!thumbBlurDragState.moved) return;
+    thumbBlurDragState.lastRectFrac = {x:x/rectWidth, y:y/rectHeight, w:w/rectWidth, h:h/rectHeight};
+    showThumbBlurBoxOn(thumbBlurDragState.imgEl, x/rectWidth, y/rectHeight, w/rectWidth, h/rectHeight);
+  });
+
+  window.addEventListener('mouseup', async ()=>{
+    if(!thumbBlurDragState) return;
+    const state = thumbBlurDragState;
+    thumbBlurDragState = null;
+    hideThumbBlurBox();
+    // ignore accidental tiny drags/clicks — require a meaningfully sized box
+    if(!state.moved || !state.lastRectFrac || state.lastRectFrac.w < 0.02 || state.lastRectFrac.h < 0.02) return;
+    suppressNextThumbClick = true; // the native 'click' that follows this drag must not also open the preview
+    await addBlurRegionToThumbnailItem(state.item, state.lastRectFrac);
+  });
+
+  // Adds one blur region to `item` from a view-fraction rect (Alt+drag on a
+  // thumbnail), always using whatever the preview window's blur-strength
+  // slider currently shows — that value is rarely changed, so there's no
+  // need to open the preview just to pick it again.
+  async function addBlurRegionToThumbnailItem(item, viewFrac){
+    if(!item.processed) return;
+    const card = item.cardEl;
+    item._cropOpToken = (item._cropOpToken || 0) + 1; // shares the same per-item guard as crop/undo, since this also reprocesses the photo
+    const myToken = item._cropOpToken;
+    card.classList.add('processing');
+    try{
+      const ok = await ensureSrcImgLoaded(item);
+      if(myToken !== item._cropOpToken) return;
+      if(!ok){
+        markError(item, 'この写真の再読み込みに失敗しました。もう一度読み込み直してください。');
+        return;
+      }
+      const canonicalFrac = rotatedFracToUnrotatedFrac(viewFrac, item.rotation || 0);
+      item.blurRegions = item.blurRegions || [];
+      item.blurRegions.push(canonicalFrac);
+      item.blurStrength = parseInt(blurStrengthEl.value, 10) || 15;
+
+      process(item);
+      await cacheProcessedResult(item);
+      if(myToken !== item._cropOpToken) return;
+      releaseSrcImg(item);
+      releaseFullResCanvas(item);
+    }catch(err){
+      if(myToken !== item._cropOpToken) return;
+      console.error('[quick blur] failed:', item.file.name, err);
+      markError(item, 'クイックぼかしに失敗しました: ' + (err && err.message ? err.message : err));
+    }finally{
+      if(myToken === item._cropOpToken) card.classList.remove('processing');
+    }
+  }
 
   window.addEventListener('mouseup', async (e)=>{
     if(!thumbDragState) return;
@@ -4171,6 +4295,18 @@
   }
 
   function renderBlurRegions(){
+    // the very first time the modal is shown (or any time modalImg.src was
+    // just reassigned), the new image may not have finished decoding yet —
+    // measuring it too early returns stale/zero dimensions, leaving these
+    // boxes positioned at 0×0 (invisible) even though their remove buttons,
+    // offset by a fixed amount, still show up somewhere on screen
+    if(!modalImg.complete || modalImg.naturalWidth === 0){
+      modalImg.addEventListener('load', function onLoad(){
+        modalImg.removeEventListener('load', onLoad);
+        renderBlurRegions();
+      });
+      return;
+    }
     positionBlurOverlay();
     blurOverlay.innerHTML = '';
     if(!modalItem || !modalItem.blurRegions) return;
