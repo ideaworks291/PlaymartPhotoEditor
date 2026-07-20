@@ -897,6 +897,10 @@
       <option value="tile5">タイル5</option>
       <option value="tile6h">タイル6横</option>
       <option value="tile6v">タイル6縦</option>
+      <option value="tile7h">タイル7横</option>
+      <option value="tile7v">タイル7縦</option>
+      <option value="tile8h">タイル8横</option>
+      <option value="tile8v">タイル8縦</option>
     </select>
     <button class="primary" id="mergeFloatRunBtn" disabled>結合を実行</button>
     <button id="mergeFloatClearBtn">選択解除</button>
@@ -2460,7 +2464,7 @@
     const count = items.filter(i=>i.selectedForMerge).length;
     autoSelectLayoutForCount(count);
     const layout = mergeLayoutEl.value;
-    const requiredCount = TILE_TEMPLATES[layout] ? TILE_TEMPLATES[layout].count : (layout === 'tile5' ? 5 : null);
+    const requiredCount = TILE_TEMPLATES[layout] ? TILE_TEMPLATES[layout].count : (layout === 'tile5' ? 5 : (layout === 'tile7h' || layout === 'tile7v') ? 7 : null);
     const hint = requiredCount != null ? `(このテンプレートには${requiredCount}枚必要)` : '';
 
     mergeFloatCount.textContent = `${count}枚選択中 ${hint}`;
@@ -2489,7 +2493,15 @@
       mergeLayoutEl.value = 'tile6h';
       return;
     }
-    if(count >= 2 && count !== 4 && count !== 5 && count !== 6){
+    if(count === 7 && current !== 'tile7h' && current !== 'tile7v'){
+      mergeLayoutEl.value = 'tile7h';
+      return;
+    }
+    if(count === 8 && current !== 'tile8h' && current !== 'tile8v'){
+      mergeLayoutEl.value = 'tile8h';
+      return;
+    }
+    if(count >= 2 && count !== 4 && count !== 5 && count !== 6 && count !== 7 && count !== 8){
       const selected = items.filter(i=>i.selectedForMerge);
       let landscapeCount = 0, portraitCount = 0;
       selected.forEach(item=>{
@@ -2539,7 +2551,7 @@
       .sort((a,b)=>(a.mergeOrder||0) - (b.mergeOrder||0));
 
     const layout = mergeLayoutEl.value;
-    const requiredCount = TILE_TEMPLATES[layout] ? TILE_TEMPLATES[layout].count : (layout === 'tile5' ? 5 : null);
+    const requiredCount = TILE_TEMPLATES[layout] ? TILE_TEMPLATES[layout].count : (layout === 'tile5' ? 5 : (layout === 'tile7h' || layout === 'tile7v') ? 7 : null);
 
     if(selected.length < 2){
       alert('結合するには2枚以上選択してください。');
@@ -2581,7 +2593,7 @@
       const id = 'img' + (idSeq++);
       const layoutSuffixMap = {
         horizontal:'_side', vertical:'_vertical',
-        tile4:'_tile4', tile5:'_tile5', tile6h:'_tile6', tile6v:'_tile6'
+        tile4:'_tile4', tile5:'_tile5', tile6h:'_tile6', tile6v:'_tile6', tile7h:'_tile7', tile7v:'_tile7', tile8h:'_tile8', tile8v:'_tile8'
       };
       const layoutSuffix = layoutSuffixMap[layout] || '_merged';
       const lastSelected = selected[selected.length - 1];
@@ -2656,7 +2668,9 @@
   const TILE_TEMPLATES = {
     tile4:  {count:4, cols:2}, // 2x2
     tile6h: {count:6, cols:3}, // 2 rows x 3 cols (wide)
-    tile6v: {count:6, cols:2}  // 3 rows x 2 cols (tall)
+    tile6v: {count:6, cols:2}, // 3 rows x 2 cols (tall)
+    tile8h: {count:8, cols:4}, // 2 rows x 4 cols (wide)
+    tile8v: {count:8, cols:2}  // 4 rows x 2 cols (tall)
   };
 
   // Fills the entire cell with the image (cropping any overflow), rather than
@@ -2724,6 +2738,64 @@
     return outCanvas;
   }
 
+  // 7 doesn't divide evenly into a rectangle either, so — same idea as
+  // tile5 — split it across two uneven rows (horizontal) or stack it with
+  // one shorter final row (vertical), rather than leaving a gap.
+  function composeTile7(canvases, gap, tall){
+    if(tall){
+      // 3 full rows of 2 + a final row with just 1, centered
+      const rows = [canvases.slice(0,2), canvases.slice(2,4), canvases.slice(4,6), canvases.slice(6,7)];
+      const cellW = Math.min(...canvases.map(c=>c.width));
+      const cellH = Math.min(...canvases.map(c=>c.height));
+      const totalW = cellW*2 + gap;
+      const totalH = cellH*4 + gap*3;
+
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = Math.round(totalW);
+      outCanvas.height = Math.round(totalH);
+      const ctx = outCanvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, outCanvas.width, outCanvas.height);
+
+      rows.forEach((row, r)=>{
+        const rowY = r*(cellH+gap);
+        if(row.length === 2){
+          row.forEach((c, idx)=>{
+            drawCoverInCell(ctx, c, idx*(cellW+gap), rowY, cellW, cellH);
+          });
+        }else{
+          drawCoverInCell(ctx, row[0], (totalW-cellW)/2, rowY, cellW, cellH);
+        }
+      });
+      return outCanvas;
+    }
+
+    // wide: 3 on top, 4 on bottom — bottom row anchors the total width,
+    // same technique as composeTile5
+    const top = canvases.slice(0, 3);
+    const bottom = canvases.slice(3, 7);
+    const cellH = Math.min(...canvases.map(c=>c.height));
+    const bottomCellW = Math.min(...bottom.map(c=>c.width));
+    const totalW = bottomCellW*4 + gap*3;
+    const topCellW = (totalW - gap*2) / 3;
+    const totalH = cellH*2 + gap;
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = Math.round(totalW);
+    outCanvas.height = Math.round(totalH);
+    const ctx = outCanvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, outCanvas.width, outCanvas.height);
+
+    top.forEach((c, idx)=>{
+      drawCoverInCell(ctx, c, idx*(topCellW+gap), 0, topCellW, cellH);
+    });
+    bottom.forEach((c, idx)=>{
+      drawCoverInCell(ctx, c, idx*(bottomCellW+gap), cellH+gap, bottomCellW, cellH);
+    });
+    return outCanvas;
+  }
+
   function composeMergedCanvas(canvases, layout, gap){
     if(layout === 'horizontal'){
       const targetH = Math.min(...canvases.map(c=>c.height));
@@ -2767,6 +2839,8 @@
 
     }else if(layout === 'tile5'){
       return composeTile5(canvases, gap);
+    }else if(layout === 'tile7h' || layout === 'tile7v'){
+      return composeTile7(canvases, gap, layout === 'tile7v');
     }else if(TILE_TEMPLATES[layout]){
       return composeGridTile(canvases, TILE_TEMPLATES[layout].cols, gap);
     }
