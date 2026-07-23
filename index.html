@@ -130,6 +130,15 @@
     margin-bottom:6px;
     letter-spacing:.04em;
   }
+  .safety-net-warning{
+    display:inline-block;
+    margin-left:8px;
+    color:#f5a623;
+    font-family:var(--sans);
+    letter-spacing:0;
+    font-weight:700;
+    cursor:help;
+  }
   .ctrl input[type=number],
   .ctrl input[type=text]{
     width:100%;
@@ -539,6 +548,37 @@
     display:flex;align-items:center;justify-content:center;
   }
   .modal-preview img{max-width:100%;max-height:100%;display:block;border-radius:4px;}
+  .modal-img-before{
+    position:absolute;
+    display:none;
+    pointer-events:none;
+    z-index:3;
+    border-radius:4px;
+  }
+  .ba-divider{
+    position:absolute;
+    display:none;
+    width:2px;
+    background:rgba(255,255,255,.8);
+    box-shadow:0 0 4px rgba(0,0,0,.6);
+    pointer-events:none;
+    z-index:4;
+  }
+  .ba-label{
+    position:absolute;
+    display:none;
+    top:8px;
+    background:rgba(0,0,0,.55);
+    color:#fff;
+    font-size:11px;
+    font-weight:700;
+    padding:3px 8px;
+    border-radius:3px;
+    pointer-events:none;
+    z-index:4;
+  }
+  .ba-label-before{left:8px;}
+  .ba-label-after{right:8px;}
   .crop-overlay{
     position:absolute;
     cursor:crosshair;
@@ -918,6 +958,10 @@
         <button id="modalPrevBtn" class="modal-nav-btn modal-nav-prev" type="button" title="前の写真">‹</button>
         <button id="modalNextBtn" class="modal-nav-btn modal-nav-next" type="button" title="次の写真">›</button>
         <img id="modalImg" alt="">
+        <img id="modalImgBefore" alt="" class="modal-img-before">
+        <div class="ba-divider" id="baDivider"></div>
+        <div class="ba-label ba-label-before" id="baLabelBefore">補正前</div>
+        <div class="ba-label ba-label-after" id="baLabelAfter">補正後</div>
         <div class="modal-info-label" id="modalInfoLabel"></div>
         <div class="crop-overlay" id="cropOverlay" style="display:none;">
           <div class="crop-selection" id="cropSelection">
@@ -979,7 +1023,7 @@
           </div>
         </div>
         <div class="ctrl" id="modalBgWrap">
-          <label>背景目標明るさ</label>
+          <label>背景目標明るさ <span id="safetyNetWarning" class="safety-net-warning" style="display:none;" title="白飛び防止のため、明るさが制限されています">⚠ 白飛び防止で制限中</span></label>
           <div class="toggle-row">
             <input type="checkbox" id="modalBgUseDefault" checked>
             <span>全体設定に従う</span>
@@ -1693,6 +1737,16 @@
     updateStatus();
     updateMergeStatus();
 
+    // the trash can hold onto photos indefinitely (until "完全に削除" is
+    // pressed), so keep only the lightweight cached JPEG resident while it
+    // sits there — otherwise every delete/merge during a long session
+    // quietly piles up full-resolution canvases in memory. The on-card
+    // thumbnail is a separate, already-baked data URI, so this doesn't
+    // affect what's displayed; ensureBaseCanvasLoaded() regenerates the
+    // full canvas cheaply (from the cached JPEG) if the photo is restored.
+    releaseFullResCanvas(item);
+    releaseSrcImg(item);
+
     deletedItems.push({item, card, nextSiblingId, prevSiblingId});
     renderTrashTile(item, card);
     updateTrashPanelVisibility();
@@ -2046,7 +2100,7 @@
       const targetLevel = (overrides.bgTarget != null) ? overrides.bgTarget : (parseInt(bgTargetLevelEl.value,10) || 150);
       const matchColor = (overrides.colorMatch != null) ? overrides.colorMatch : bgColorMatchEl.checked;
       const result = autoLevelsToBackground(imgData, clipPct, targetLevel, matchColor);
-      appliedInfo = {mode:'bg', bgLum:result.bgLum, target:targetLevel};
+      appliedInfo = {mode:'bg', bgLum:result.bgLum, target:targetLevel, safeGainCap:result.safeGainCap};
     }else{
       const maxHeadroom = (overrides.headroom != null) ? overrides.headroom : (parseInt(highlightHeadroomEl.value,10) || 0);
       const appliedHeadroom = autoHighlightEl.checked
@@ -2316,7 +2370,13 @@
       data[i+2] = Math.min(255, data[i+2] * gB);
     }
 
-    return {bgLum: Math.round(bgLum)};
+    // cached so the live-preview slider drag can respect the same
+    // highlight-safety cap without re-scanning every pixel each tick —
+    // maxSafeGain depends only on the (gain-independent) histogram, so this
+    // value stays valid for ANY candidate gain, not just the one just used
+    const safeGainCap = Math.min(maxSafeGain(histR), maxSafeGain(histG), maxSafeGain(histB));
+
+    return {bgLum: Math.round(bgLum), safeGainCap};
   }
 
   // Detects whether a large, fairly uniform bright region (e.g. a white/light
@@ -2852,6 +2912,24 @@
   const modalImg = document.getElementById('modalImg');
   const modalBgUseDefault = document.getElementById('modalBgUseDefault');
   const modalBgOverride = document.getElementById('modalBgOverride');
+  const safetyNetWarning = document.getElementById('safetyNetWarning');
+
+  // Shows the "⚠ 白飛び防止で制限中" hint whenever the highlight-safety-net
+  // is actually holding the gain back below what the target value alone
+  // would otherwise request — i.e. the person has hit the ceiling, not just
+  // approaching it. Called both live while dragging and after a real
+  // reprocess, so it reflects whichever gain is currently being shown.
+  function updateSafetyNetWarning(candidateTarget){
+    const info = modalItem && modalItem.appliedInfo;
+    if(!info || info.mode !== 'bg' || info.bgLum == null || info.safeGainCap == null){
+      safetyNetWarning.style.display = 'none';
+      return;
+    }
+    const safeBg = Math.max(info.bgLum, 20);
+    const rawGain = Math.max(0.45, Math.min(3.0, candidateTarget/safeBg));
+    const cap = Math.max(1, info.safeGainCap);
+    safetyNetWarning.style.display = (rawGain > cap) ? 'inline-block' : 'none';
+  }
   const modalBgVal = document.getElementById('modalBgVal');
   const modalBgWrap = document.getElementById('modalBgWrap');
   const modalColorMatchEl = document.getElementById('modalColorMatch');
@@ -2928,7 +3006,9 @@
 
     modalImg.src = item.processedCanvas.toDataURL('image/jpeg', 0.9);
     modalImg.style.filter = ''; // clear any live-preview approximation left over from a previous photo
+    endBeforeAfterCompare();
     modalPreviewBaselineTarget = (item.appliedInfo && item.appliedInfo.mode === 'bg') ? item.appliedInfo.target : parseInt(modalBgOverride.value,10) || 150;
+    updateSafetyNetWarning(modalPreviewBaselineTarget);
     modalPreviewBaselineBoost = item.extraBoost || 1;
     modalOverlay.style.display = 'flex';
 
@@ -3122,18 +3202,79 @@
       reprocessModalItem();
     }
   });
+  const modalImgBefore = document.getElementById('modalImgBefore');
+  const baDivider = document.getElementById('baDivider');
+  const baLabelBefore = document.getElementById('baLabelBefore');
+  const baLabelAfter = document.getElementById('baLabelAfter');
+  let baCompareActive = false;
+
+  function positionBeforeAfterDivider(){
+    const imgRect = modalImg.getBoundingClientRect();
+    const boxRect = modalPreviewBox.getBoundingClientRect();
+    const left = imgRect.left - boxRect.left;
+    const top = imgRect.top - boxRect.top;
+    modalImgBefore.style.left = left + 'px';
+    modalImgBefore.style.top = top + 'px';
+    modalImgBefore.style.width = imgRect.width + 'px';
+    modalImgBefore.style.height = imgRect.height + 'px';
+    baDivider.style.left = (left + imgRect.width/2 - 1) + 'px';
+    baDivider.style.top = top + 'px';
+    baDivider.style.height = imgRect.height + 'px';
+  }
+
+  // Shows a left(before)/right(after) split of the CURRENT photo while a
+  // brightness-related slider is actively being dragged — automatic, no
+  // extra click needed, and it goes away again the moment the drag ends
+  // and the real (precise) result replaces the live approximation.
+  function startBeforeAfterCompare(){
+    if(baCompareActive) return; // already showing — don't re-snapshot mid-drag
+    modalImgBefore.src = modalImg.src; // the image as it looked BEFORE this drag started
+    modalImgBefore.style.clipPath = 'inset(0 50% 0 0)';
+    modalImg.style.clipPath = 'inset(0 0 0 50%)';
+    positionBeforeAfterDivider();
+    modalImgBefore.style.display = 'block';
+    baDivider.style.display = 'block';
+    baLabelBefore.style.display = 'block';
+    baLabelAfter.style.display = 'block';
+    baCompareActive = true;
+  }
+
+  function endBeforeAfterCompare(){
+    if(!baCompareActive) return;
+    modalImgBefore.style.display = 'none';
+    baDivider.style.display = 'none';
+    baLabelBefore.style.display = 'none';
+    baLabelAfter.style.display = 'none';
+    modalImg.style.clipPath = '';
+    baCompareActive = false;
+  }
+
   function applyLivePreviewFilter(){
-    // cheap approximation: since gain is proportional to target/backgroundLuminance,
-    // the RATIO between the new slider value and the target that produced the
-    // currently-shown image approximates the relative brightness change —
-    // the background luminance term cancels out, so we don't need to know it here.
-    // This won't capture the highlight-clipping safety net or color-match
-    // nuances exactly, but gives immediate, honest-enough visual feedback
-    // while dragging; the precise result still comes from "この設定で再処理".
-    // Combines BOTH the background-target slider and the extra-boost slider,
-    // since either one (or both, mid-drag) can differ from what's currently shown.
+    startBeforeAfterCompare();
+    // Cheap approximation of what the real recompute would produce, so the
+    // "After" side updates instantly while dragging. Naively, gain scales
+    // with target/backgroundLuminance — but that alone ignores the
+    // highlight-safety-net (autoLevelsToBackground caps the gain so bright
+    // subjects don't blow out). Without accounting for it, a photo that's
+    // already hitting that cap would preview brighter here than the real
+    // result. Since the cap depends only on the photo's own (gain-independent)
+    // histogram, it was cached on the last real process — reuse it here
+    // instead of re-scanning every pixel on every drag tick.
+    const info = modalItem && modalItem.appliedInfo;
     const target = parseInt(modalBgOverride.value, 10) || modalPreviewBaselineTarget;
-    const targetRatio = target / modalPreviewBaselineTarget;
+    updateSafetyNetWarning(target);
+    let targetRatio;
+    if(info && info.mode === 'bg' && info.bgLum != null && info.safeGainCap != null){
+      const safeBg = Math.max(info.bgLum, 20);
+      const rawGain = (bgVal)=> Math.max(0.45, Math.min(3.0, bgVal/safeBg));
+      const cappedGain = (bgVal)=> Math.min(rawGain(bgVal), Math.max(1, info.safeGainCap));
+      const baselineGain = cappedGain(modalPreviewBaselineTarget);
+      const candidateGain = cappedGain(target);
+      targetRatio = candidateGain / (baselineGain || 1);
+    }else{
+      // fallback for modes without a cached cap (e.g. nothing processed yet)
+      targetRatio = target / modalPreviewBaselineTarget;
+    }
     const boost = parseFloat(extraBoostEl.value) || 1;
     const boostRatio = boost / (modalPreviewBaselineBoost || 1);
     const combined = targetRatio * boostRatio;
@@ -3236,7 +3377,9 @@
       if(modalItem === targetItem){
         modalImg.src = targetItem.processedCanvas.toDataURL('image/jpeg', 0.9);
         modalImg.style.filter = ''; // the new image already reflects the real computation — drop the approximation
+        endBeforeAfterCompare();
         modalPreviewBaselineTarget = (targetItem.appliedInfo && targetItem.appliedInfo.mode === 'bg') ? targetItem.appliedInfo.target : modalPreviewBaselineTarget;
+        updateSafetyNetWarning(modalPreviewBaselineTarget);
         modalPreviewBaselineBoost = targetItem.extraBoost || 1;
         renderBlurRegions();
         const infoLabel = document.getElementById('modalInfoLabel');
@@ -4677,12 +4820,14 @@
         downloadBtn.textContent = `圧縮中… ${Math.round(metadata.percent)}%`;
       });
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(content);
+      const zipUrl = URL.createObjectURL(content);
+      a.href = zipUrl;
       a.download = lastEntryName ? lastEntryName.replace(/\.jpg$/i, '.zip') : 'listing_photos.zip';
       a.click();
       // give the download a moment to actually start before we wipe the
       // in-memory data it depends on
       await new Promise(res=>setTimeout(res, 300));
+      URL.revokeObjectURL(zipUrl);
       clearAllItems();
     }catch(err){
       console.error('[download] failed:', err);
