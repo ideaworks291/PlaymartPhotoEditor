@@ -2,7 +2,95 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
+
+<script>
+/* ============================================================
+   ★★★ 拠点別の初期設定(このファイルで一番よく編集する場所です) ★★★
+   ============================================================
+   1つのHTMLファイルを全店舗で共通利用し、URLの末尾に「?store=店舗キー」を
+   付けることで、その店舗用の初期設定に切り替わります。
+   例: index.html?store=osaka
+
+   ■ 数値・ON/OFFを変えたいだけの場合
+     → 下のSTORE_PRESETS内、該当店舗の値をそのまま書き換えてください。
+
+   ■ 新しい店舗を追加したい場合
+     → STORE_PRESETSに項目(例: fukuoka: {...})を1つ追加するだけでOKです。
+       他の場所を編集する必要はありません。
+
+   ■ ?store=を付けなかった場合の初期値
+     → 下のGENERIC_DEFAULTが使われます(特定店舗の設定は流用されません)。
+   ============================================================ */
+
+const STORE_PRESETS = {
+
+  // ---- 石川小松店 (?store=ishikawa) ----
+  ishikawa: {
+    autoCorrectEnabled: true,      // 自動で明るさ補正する            [ON / OFF]
+    bgAnchorMode: true,            // true:背景基準で明るさを揃える / false:ヒストグラムベース
+    bgTargetLevel: 180,            // 背景目標明るさ                  [45〜255]
+    bgColorMatch: false,           // 背景の色みも同じ色に揃える      [ON / OFF]
+    gridColumns: null,             // 1列に並べる枚数(nullなら自動)
+    cropAspectLockDefault: true,   // サムネイルCtrl+ドラッグの縦横比維持 [ON / OFF]
+    fixedNamingPrefix: 'komatsu_', // 連番ファイル名の固定接頭辞(nullなら元ファイル名から自動判定)
+    fixedNamingWidth: 3,           // 連番の桁数(3なら 001, 002 ...)
+    fixedNamingStartNum: 1         // 連番の開始番号
+  },
+
+  // ---- 大阪門真店 (?store=osaka) ----
+  osaka: {
+    autoCorrectEnabled: false,
+    bgAnchorMode: true,
+    bgTargetLevel: 150,
+    bgColorMatch: false,
+    gridColumns: null,
+    cropAspectLockDefault: false,
+    fixedNamingPrefix: null,
+    fixedNamingWidth: 4,
+    fixedNamingStartNum: 1
+  }
+
+  // ---- 新しい店舗はここに追加 ----
+  // fukuoka: {
+  //   autoCorrectEnabled: false,
+  //   bgAnchorMode: true,
+  //   bgTargetLevel: 150,
+  //   bgColorMatch: false,
+  //   gridColumns: null,
+  //   cropAspectLockDefault: false,
+  //   fixedNamingPrefix: null,
+  //   fixedNamingWidth: 4,
+  //   fixedNamingStartNum: 1
+  // }
+
+};
+
+// ---- ?store=が無い・該当キーが無い場合のフォールバック(汎用の初期値) ----
+const GENERIC_DEFAULT = {
+  autoCorrectEnabled: false,
+  bgAnchorMode: true,
+  bgTargetLevel: 150,
+  bgColorMatch: false,
+  gridColumns: null,
+  cropAspectLockDefault: false,
+  fixedNamingPrefix: null,
+  fixedNamingWidth: 4,
+  fixedNamingStartNum: 1
+};
+
+/* ============================================================
+   ここから下は切り替えロジックです。通常は編集不要です。
+   ============================================================ */
+const BRANCH_DEFAULTS = (function(){
+  const params = new URLSearchParams(window.location.search);
+  const key = params.get('store');
+  return STORE_PRESETS[key] || GENERIC_DEFAULT;
+})();
+/* ============================================================ */
+</script>
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
 <title>PLAYMART出品写真編集ツール</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2064%2064%22%3E%0A%20%20%3Crect%20x%3D%224%22%20y%3D%2218%22%20width%3D%2256%22%20height%3D%2238%22%20rx%3D%228%22%20fill%3D%22%23C00081%22/%3E%0A%20%20%3Crect%20x%3D%2222%22%20y%3D%228%22%20width%3D%2220%22%20height%3D%2212%22%20rx%3D%223%22%20fill%3D%22%23C00081%22/%3E%0A%20%20%3Ccircle%20cx%3D%2232%22%20cy%3D%2238%22%20r%3D%2213%22%20fill%3D%22%2314181c%22/%3E%0A%20%20%3Ccircle%20cx%3D%2232%22%20cy%3D%2238%22%20r%3D%228%22%20fill%3D%22%23C00081%22/%3E%0A%20%20%3Ccircle%20cx%3D%2247%22%20cy%3D%2226%22%20r%3D%223%22%20fill%3D%22%2314181c%22/%3E%0A%3C/svg%3E">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" crossorigin="anonymous"></script>
@@ -130,14 +218,23 @@
     margin-bottom:6px;
     letter-spacing:.04em;
   }
-  .safety-net-warning{
-    display:inline-block;
-    margin-left:8px;
-    color:#f5a623;
-    font-family:var(--sans);
-    letter-spacing:0;
+  .safety-net-overlay{
+    position:absolute;
+    display:none;
+    top:8px;
+    left:50%;
+    transform:translateX(-50%);
+    background:rgba(245,166,35,.95);
+    color:#1a1206;
+    font-size:12px;
     font-weight:700;
+    padding:5px 12px;
+    border-radius:4px;
+    box-shadow:0 2px 8px rgba(0,0,0,.4);
+    pointer-events:none;
+    z-index:6;
     cursor:help;
+    white-space:nowrap;
   }
   .ctrl input[type=number],
   .ctrl input[type=text]{
@@ -963,6 +1060,7 @@
         <div class="ba-label ba-label-before" id="baLabelBefore">補正前</div>
         <div class="ba-label ba-label-after" id="baLabelAfter">補正後</div>
         <div class="modal-info-label" id="modalInfoLabel"></div>
+        <div class="safety-net-overlay" id="safetyNetOverlay" title="白飛び防止のため、明るさが制限されています">⚠ 白飛び防止で明るさを制限中</div>
         <div class="crop-overlay" id="cropOverlay" style="display:none;">
           <div class="crop-selection" id="cropSelection">
             <div class="crop-handle" data-handle="nw"></div>
@@ -1023,7 +1121,7 @@
           </div>
         </div>
         <div class="ctrl" id="modalBgWrap">
-          <label>背景目標明るさ <span id="safetyNetWarning" class="safety-net-warning" style="display:none;" title="白飛び防止のため、明るさが制限されています">⚠ 白飛び防止で制限中</span></label>
+          <label>背景目標明るさ</label>
           <div class="toggle-row">
             <input type="checkbox" id="modalBgUseDefault" checked>
             <span>全体設定に従う</span>
@@ -1113,6 +1211,16 @@
   const statusBar = document.getElementById('statusBar');
   const downloadBtn = document.getElementById('downloadBtn');
   const reprocessBtn = document.getElementById('reprocessBtn');
+
+  // apply this branch's defaults (see BRANCH_DEFAULTS at the top of the file)
+  autoCorrectEnabledEl.checked = BRANCH_DEFAULTS.autoCorrectEnabled;
+  bgAnchorModeEl.checked = BRANCH_DEFAULTS.bgAnchorMode;
+  bgTargetLevelEl.value = BRANCH_DEFAULTS.bgTargetLevel;
+  document.getElementById('bgTargetVal').value = BRANCH_DEFAULTS.bgTargetLevel;
+  bgColorMatchEl.checked = BRANCH_DEFAULTS.bgColorMatch;
+  if(BRANCH_DEFAULTS.gridColumns != null) gridColumnsEl.value = BRANCH_DEFAULTS.gridColumns;
+  document.getElementById('gridCropAspectLock').checked = !!BRANCH_DEFAULTS.cropAspectLockDefault;
+  document.getElementById('cropAspectLock').checked = !!BRANCH_DEFAULTS.cropAspectLockDefault;
   const clearBtn = document.getElementById('clearBtn');
   const mergeLayoutEl = document.getElementById('mergeFloatLayout');
   const mergeRunBtn = document.getElementById('mergeFloatRunBtn');
@@ -2912,7 +3020,7 @@
   const modalImg = document.getElementById('modalImg');
   const modalBgUseDefault = document.getElementById('modalBgUseDefault');
   const modalBgOverride = document.getElementById('modalBgOverride');
-  const safetyNetWarning = document.getElementById('safetyNetWarning');
+  const safetyNetOverlay = document.getElementById('safetyNetOverlay');
 
   // Shows the "⚠ 白飛び防止で制限中" hint whenever the highlight-safety-net
   // is actually holding the gain back below what the target value alone
@@ -2922,13 +3030,13 @@
   function updateSafetyNetWarning(candidateTarget){
     const info = modalItem && modalItem.appliedInfo;
     if(!info || info.mode !== 'bg' || info.bgLum == null || info.safeGainCap == null){
-      safetyNetWarning.style.display = 'none';
+      safetyNetOverlay.style.display = 'none';
       return;
     }
     const safeBg = Math.max(info.bgLum, 20);
     const rawGain = Math.max(0.45, Math.min(3.0, candidateTarget/safeBg));
     const cap = Math.max(1, info.safeGainCap);
-    safetyNetWarning.style.display = (rawGain > cap) ? 'inline-block' : 'none';
+    safetyNetOverlay.style.display = (rawGain > cap) ? 'block' : 'none';
   }
   const modalBgVal = document.getElementById('modalBgVal');
   const modalBgWrap = document.getElementById('modalBgWrap');
@@ -3272,8 +3380,15 @@
       const candidateGain = cappedGain(target);
       targetRatio = candidateGain / (baselineGain || 1);
     }else{
-      // fallback for modes without a cached cap (e.g. nothing processed yet)
-      targetRatio = target / modalPreviewBaselineTarget;
+      // We don't yet know what gain this photo's background actually needs
+      // (e.g. this is the very first drag right after auto-enabling
+      // correction on a photo that was never bg-anchor-processed before —
+      // the currently-shown baseline is the untouched original, NOT some
+      // already-150-adjusted image). Guessing a ratio here would preview a
+      // brightness change that has nothing to do with the real result, and
+      // then visibly "snap" once the background reprocess catches up.
+      // Showing no change is more honest until real data exists.
+      targetRatio = 1;
     }
     const boost = parseFloat(extraBoostEl.value) || 1;
     const boostRatio = boost / (modalPreviewBaselineBoost || 1);
@@ -3287,6 +3402,19 @@
     // uncheck "use default" automatically instead of requiring a separate step
     if(modalBgUseDefault.checked){
       modalBgUseDefault.checked = false;
+    }
+    // ...and it means "I want brightness correction applied to this photo",
+    // full stop — otherwise the slider drag looks like it's doing something
+    // (via the live-preview approximation) while the real result stays
+    // completely untouched, since correction was never actually turned on
+    if(!modalAutoCorrectEnabledEl.checked){
+      modalAutoCorrectEnabledEl.checked = true;
+      // the highlight-safety-net check needs a real (not just approximated)
+      // pass to know this photo's actual cap — kick one off now, in the
+      // background, rather than waiting for the drag to end, so the warning
+      // can become accurate as early as possible instead of only from the
+      // NEXT interaction onward
+      reprocessModalItem();
     }
     modalBgVal.value = modalBgOverride.value;
     applyLivePreviewFilter();
@@ -3306,6 +3434,10 @@
     modalBgOverride.value = v;
     if(modalBgUseDefault.checked){
       modalBgUseDefault.checked = false;
+    }
+    if(!modalAutoCorrectEnabledEl.checked){
+      modalAutoCorrectEnabledEl.checked = true;
+      reprocessModalItem();
     }
     applyLivePreviewFilter();
   });
@@ -4764,7 +4896,11 @@
     downloadBtn.disabled = true;
     const originalLabel = 'ZIPでダウンロード';
     const sequential = fileNameModeEl.value === 'sequential';
-    const namingScheme = sequential ? computeSequentialNamingScheme(included[0].file.name) : null;
+    const namingScheme = sequential
+      ? (BRANCH_DEFAULTS.fixedNamingPrefix
+          ? {prefix: BRANCH_DEFAULTS.fixedNamingPrefix, width: BRANCH_DEFAULTS.fixedNamingWidth || 3, startNum: BRANCH_DEFAULTS.fixedNamingStartNum || 1}
+          : computeSequentialNamingScheme(included[0].file.name))
+      : null;
     const usedNames = new Set();
 
     try{
