@@ -32,9 +32,10 @@ const STORE_PRESETS = {
     bgColorMatch: false,           // 背景の色みも同じ色に揃える      [ON / OFF]
     gridColumns: null,             // 1列に並べる枚数(nullなら自動)
     cropAspectLockDefault: true,   // サムネイルCtrl+ドラッグの縦横比維持 [ON / OFF]
-    fixedNamingPrefix: 'komatsu_', // 連番ファイル名の固定接頭辞(nullなら元ファイル名から自動判定)
+    fixedNamingPrefix: null,       // 連番ファイル名の固定接頭辞(nullなら元ファイル名から自動判定)
     fixedNamingWidth: 3,           // 連番の桁数(3なら 001, 002 ...)
-    fixedNamingStartNum: 1         // 連番の開始番号
+    fixedNamingStartNum: 1,        // 連番の開始番号
+    zipFileNamePrefix: 'komatsu_'  // ダウンロードするZIP自体のファイル名の接頭辞(nullなら従来通り、写真名から自動生成) → 例: komatsu_20260725_1430.zip
   },
 
   // ---- 大阪門真店 (?store=osaka) ----
@@ -47,7 +48,8 @@ const STORE_PRESETS = {
     cropAspectLockDefault: false,
     fixedNamingPrefix: null,
     fixedNamingWidth: 4,
-    fixedNamingStartNum: 1
+    fixedNamingStartNum: 1,
+    zipFileNamePrefix: null
   }
 
   // ---- 新しい店舗はここに追加 ----
@@ -60,7 +62,8 @@ const STORE_PRESETS = {
   //   cropAspectLockDefault: false,
   //   fixedNamingPrefix: null,
   //   fixedNamingWidth: 4,
-  //   fixedNamingStartNum: 1
+  //   fixedNamingStartNum: 1,
+  //   zipFileNamePrefix: null
   // }
 
 };
@@ -75,7 +78,8 @@ const GENERIC_DEFAULT = {
   cropAspectLockDefault: false,
   fixedNamingPrefix: null,
   fixedNamingWidth: 4,
-  fixedNamingStartNum: 1
+  fixedNamingStartNum: 1,
+  zipFileNamePrefix: null
 };
 
 /* ============================================================
@@ -2569,14 +2573,15 @@ const BRANCH_DEFAULTS = (function(){
   reprocessBtn.addEventListener('click', async ()=>{
     reprocessBtn.disabled = true;
     const targets = items.filter(i=>!i.hasError);
-    for(let idx=0; idx<targets.length; idx++){
-      const item = targets[idx];
-      reprocessBtn.textContent = `再処理中… (${idx+1}/${targets.length})`;
+    const REPROCESS_CONCURRENCY = 4; // same reasoning as the load pipeline and ZIP export — process several photos' worth of decode/encode work at once instead of one at a time
+    let completedCount = 0;
+
+    async function reprocessOneForBulk(item){
       item.cardEl.classList.add('processing');
       const ok = await ensureSrcImgLoaded(item);
       if(!ok){
         markError(item, 'この写真の再読み込みに失敗しました。もう一度読み込み直してください。');
-        continue;
+        return;
       }
       try{
         process(item);
@@ -2587,6 +2592,13 @@ const BRANCH_DEFAULTS = (function(){
         console.error('reprocess error:', item.file.name, err);
         markError(item, '再処理に失敗しました: ' + err.message);
       }
+      completedCount++;
+      reprocessBtn.textContent = `再処理中… (${completedCount}/${targets.length})`;
+    }
+
+    for(let batchStart=0; batchStart<targets.length; batchStart+=REPROCESS_CONCURRENCY){
+      const batch = targets.slice(batchStart, batchStart+REPROCESS_CONCURRENCY);
+      await Promise.all(batch.map(reprocessOneForBulk));
     }
     reprocessBtn.disabled = false;
     reprocessBtn.textContent = 'この設定で再処理';
@@ -4906,13 +4918,38 @@ const BRANCH_DEFAULTS = (function(){
     try{
       const zip = new JSZip();
       let lastEntryName = null;
-      for(let idx=0; idx<included.length; idx++){
-        downloadBtn.textContent = `生成中… (${idx+1}/${included.length})`;
-        const item = included[idx];
+      const DOWNLOAD_CONCURRENCY = 4; // matches the initial load/process pipeline's MAX_CONCURRENT
+      let completedCount = 0;
+
+      // name is computed per-item up front, from its FIXED position in the
+      // export order — this must stay independent of which order items
+      // actually finish decoding/encoding in once we process them concurrently
+      function computeExportName(item, idx){
+        if(sequential){
+          const wrapAt = Math.pow(10, namingScheme.width);
+          const num = (namingScheme.startNum + idx) % wrapAt;
+          return sanitizeFileNamePart(namingScheme.prefix) + String(num).padStart(namingScheme.width, '0') + '.jpg';
+        }
+        const originalStem = (item.file.name || `photo${idx+1}`).replace(/\.[^.]+$/, '');
+        let name = sanitizeFileNamePart(originalStem) + '.jpg';
+        if(usedNames.has(name)){
+          let n = 2;
+          let candidate;
+          do{
+            candidate = sanitizeFileNamePart(originalStem) + '_' + n + '.jpg';
+            n++;
+          }while(usedNames.has(candidate));
+          name = candidate;
+        }
+        usedNames.add(name);
+        return name;
+      }
+
+      async function processOneForExport(item, idx){
         const ok = await ensureBaseCanvasLoaded(item);
         if(!ok){
           console.error('[download] could not regenerate canvas for', item.file.name);
-          continue; // skip this one rather than aborting the whole export
+          return;
         }
         const blob = await new Promise((res, rej)=>{
           item.processedCanvas.toBlob(b=>{
@@ -4924,33 +4961,23 @@ const BRANCH_DEFAULTS = (function(){
         // the cached JPEG) if this photo is rotated, fine-tuned, or
         // downloaded again later
         releaseFullResCanvas(item);
-        let name;
-        if(sequential){
-          // continues the count from the first photo's own filename number,
-          // in the CURRENT order (i.e. reflects any drag-and-drop
-          // reordering) — wraps back to 0 if it overflows the digit width
-          // (e.g. ...9999 -> 0000 for a 4-digit counter)
-          const wrapAt = Math.pow(10, namingScheme.width);
-          const num = (namingScheme.startNum + idx) % wrapAt;
-          name = sanitizeFileNamePart(namingScheme.prefix) + String(num).padStart(namingScheme.width, '0') + '.jpg';
-        }else{
-          const originalStem = (item.file.name || `photo${idx+1}`).replace(/\.[^.]+$/, '');
-          name = sanitizeFileNamePart(originalStem) + '.jpg';
-          // avoid overwriting entries if two source files share the same stem
-          if(usedNames.has(name)){
-            let n = 2;
-            let candidate;
-            do{
-              candidate = sanitizeFileNamePart(originalStem) + '_' + n + '.jpg';
-              n++;
-            }while(usedNames.has(candidate));
-            name = candidate;
-          }
-        }
-        usedNames.add(name);
+        const name = computeExportName(item, idx);
         zip.file(name, blob);
         lastEntryName = name;
+        completedCount++;
+        downloadBtn.textContent = `生成中… (${completedCount}/${included.length})`;
       }
+
+      // process in fixed-size concurrent batches — same reasoning as the
+      // load-time pipeline: several photos' worth of decode/encode work
+      // overlapping is what actually cuts down wall-clock time for large
+      // batches (300 photos processed strictly one-at-a-time was the main
+      // cause of slow ZIP generation)
+      for(let batchStart=0; batchStart<included.length; batchStart+=DOWNLOAD_CONCURRENCY){
+        const batch = included.slice(batchStart, batchStart+DOWNLOAD_CONCURRENCY);
+        await Promise.all(batch.map((item, i)=> processOneForExport(item, batchStart+i)));
+      }
+
       downloadBtn.textContent = '圧縮中… 0%';
       const content = await zip.generateAsync({type:'blob', compression:'STORE'}, (metadata)=>{
         downloadBtn.textContent = `圧縮中… ${Math.round(metadata.percent)}%`;
@@ -4958,7 +4985,14 @@ const BRANCH_DEFAULTS = (function(){
       const a = document.createElement('a');
       const zipUrl = URL.createObjectURL(content);
       a.href = zipUrl;
-      a.download = lastEntryName ? lastEntryName.replace(/\.jpg$/i, '.zip') : 'listing_photos.zip';
+      if(BRANCH_DEFAULTS.zipFileNamePrefix){
+        const d = new Date();
+        const pad = (n)=> String(n).padStart(2,'0');
+        const stamp = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+        a.download = BRANCH_DEFAULTS.zipFileNamePrefix + stamp + '.zip';
+      }else{
+        a.download = lastEntryName ? lastEntryName.replace(/\.jpg$/i, '.zip') : 'listing_photos.zip';
+      }
       a.click();
       // give the download a moment to actually start before we wipe the
       // in-memory data it depends on
