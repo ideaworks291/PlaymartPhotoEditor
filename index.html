@@ -1503,6 +1503,7 @@ const BRANCH_DEFAULTS = (function(){
       for(const zf of zipFiles){
         if(loadGeneration !== myGeneration) break; // cancelled (e.g. "すべてクリア" pressed) partway through a multi-ZIP drop
         zipStatusEl.style.display = 'flex';
+        delete zipStatusEl.dataset.done; // a fresh load is starting — allow the "完了" message to fire again once THIS one finishes
         zipStatusEl.innerHTML = `<span class="spinner"></span> ZIP読み込み中: <span class="n">${zf.name}</span> (${(zf.size/1024/1024).toFixed(1)}MB)`;
         try{
           const extracted = await expandZip(zf, (done,total)=>{
@@ -2568,6 +2569,14 @@ const BRANCH_DEFAULTS = (function(){
       ${stillWorking>0 ? `&nbsp;|&nbsp; <span class="spinner"></span> 処理中: <span class="n">${stillWorking}</span>枚` : ''}
     `;
     downloadBtn.disabled = (includedCount===0) || items.some(i=>i.included && !i.processed);
+
+    // once everything finishes, swap the lingering "読み込みました。処理を
+    // 開始します…" message for a clear completion state, rather than
+    // leaving it looking like loading is still (or forever) in progress
+    if(stillWorking === 0 && total > 0 && zipStatusEl.style.display !== 'none' && !zipStatusEl.dataset.done){
+      zipStatusEl.innerHTML = `<span class="ok">✓</span> 読み込みが完了しました(${total}枚)`;
+      zipStatusEl.dataset.done = '1';
+    }
   }
 
   reprocessBtn.addEventListener('click', async ()=>{
@@ -2615,6 +2624,8 @@ const BRANCH_DEFAULTS = (function(){
     updateTrashPanelVisibility();
     updateEmptyMsg();
     updateStatus();
+    zipStatusEl.style.display = 'none'; // otherwise the last "読み込みました" message stays on screen forever
+    delete zipStatusEl.dataset.done;
   }
 
   clearBtn.addEventListener('click', clearAllItems);
@@ -4999,6 +5010,11 @@ const BRANCH_DEFAULTS = (function(){
       await new Promise(res=>setTimeout(res, 300));
       URL.revokeObjectURL(zipUrl);
       clearAllItems();
+      // clearAllItems() just hid this — show a fresh, explicit confirmation
+      // now that the workspace has actually been reset for the next batch
+      zipStatusEl.style.display = 'flex';
+      zipStatusEl.innerHTML = `<span class="ok">✓</span> ダウンロードが完了しました`;
+      zipStatusEl.dataset.done = '1';
     }catch(err){
       console.error('[download] failed:', err);
       alert('ZIP生成に失敗しました: ' + (err && err.message ? err.message : err));
