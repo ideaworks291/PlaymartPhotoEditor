@@ -35,7 +35,7 @@ const STORE_PRESETS = {
     fixedNamingPrefix: null,       // 連番ファイル名の固定接頭辞(nullなら元ファイル名から自動判定)
     fixedNamingWidth: 3,           // 連番の桁数(3なら 001, 002 ...)
     fixedNamingStartNum: 1,        // 連番の開始番号
-    zipFileNamePrefix: 'komatsu_'  // ダウンロードするZIP自体のファイル名の接頭辞(nullなら従来通り、写真名から自動生成) → 例: komatsu_20260725_1430.zip
+    zipFileNamePrefix: 'ishikawa_'  // ダウンロードするZIP自体のファイル名の接頭辞(nullなら従来通り、写真名から自動生成) → 例: ishikawa_0726_1922.zip
   },
 
   // ---- 大阪門真店 (?store=osaka) ----
@@ -1340,7 +1340,7 @@ const BRANCH_DEFAULTS = (function(){
     return 'image/jpeg';
   }
 
-  async function expandZip(zipFile, progressCb){
+  async function expandZip(zipFile, progressCb, onFileExtracted){
     const results = [];
     const zip = await JSZip.loadAsync(zipFile); // let errors propagate to caller
 
@@ -1362,6 +1362,12 @@ const BRANCH_DEFAULTS = (function(){
         const baseName = entry.name.split(/[\/\\]/).pop();
         const file = new File([blob], baseName, {type: guessMimeFromName(baseName)});
         results.push(file);
+        // let the caller start THIS photo's processing right away, instead
+        // of waiting for every remaining entry in the zip to finish
+        // decompressing first — decompression (CPU-bound, one entry at a
+        // time) and image processing (its own separate 4-way concurrent
+        // queue) can then overlap instead of running as two back-to-back phases
+        if(onFileExtracted) onFileExtracted(file);
       }catch(err){
         console.error('zip entry extraction failed:', entry.name, err);
       }
@@ -1509,13 +1515,17 @@ const BRANCH_DEFAULTS = (function(){
           const extracted = await expandZip(zf, (done,total)=>{
             if(loadGeneration !== myGeneration) return; // avoid touching stale UI after a cancel
             zipStatusEl.innerHTML = `<span class="spinner"></span> ZIP展開中: <span class="n">${zf.name}</span> (${done}/${total})`;
+          }, (file)=>{
+            // start THIS photo's processing as soon as it's extracted,
+            // instead of waiting for the whole zip to finish first
+            if(loadGeneration !== myGeneration) return;
+            addItemsFromFiles([file]);
           });
           // the extraction itself can take a while — re-check before using its result
           if(loadGeneration !== myGeneration) break;
           console.log('[handleFiles] zip', zf.name, '→ extracted', extracted.length, 'image(s)');
           if(extracted.length){
             zipStatusEl.innerHTML = `<span class="ok">✓</span> ${zf.name}: 画像 <span class="n">${extracted.length}</span>件を読み込みました。処理を開始します…`;
-            addItemsFromFiles(extracted);
           }else{
             zipStatusEl.innerHTML = `<span class="warn">⚠</span> ${zf.name}: 対応する画像ファイル(jpg/png/heic)が見つかりませんでした`;
           }
@@ -4999,7 +5009,7 @@ const BRANCH_DEFAULTS = (function(){
       if(BRANCH_DEFAULTS.zipFileNamePrefix){
         const d = new Date();
         const pad = (n)=> String(n).padStart(2,'0');
-        const stamp = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+        const stamp = `${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
         a.download = BRANCH_DEFAULTS.zipFileNamePrefix + stamp + '.zip';
       }else{
         a.download = lastEntryName ? lastEntryName.replace(/\.jpg$/i, '.zip') : 'listing_photos.zip';
