@@ -966,6 +966,10 @@ const BRANCH_DEFAULTS = (function(){
       <button id="clearBtn">すべてクリア</button>
       <button class="primary" id="downloadBtn" disabled>ZIPでダウンロード</button>
     </div>
+    <div class="toggle-row" style="margin-top:6px;">
+      <input type="checkbox" id="autoReloadAfterDownload">
+      <span>ダウンロード完了後にページを自動で再読み込みする(長時間使用による動作の重さをリセットします)</span>
+    </div>
 
     <div class="status-bar" id="zipStatus" style="display:none;"></div>
 
@@ -1224,6 +1228,21 @@ const BRANCH_DEFAULTS = (function(){
   bgColorMatchEl.checked = BRANCH_DEFAULTS.bgColorMatch;
   if(BRANCH_DEFAULTS.gridColumns != null) gridColumnsEl.value = BRANCH_DEFAULTS.gridColumns;
   document.getElementById('gridCropAspectLock').checked = !!BRANCH_DEFAULTS.cropAspectLockDefault;
+
+  // remembers the person's choice across sessions (this is our own
+  // standalone page running in their browser, not a Claude.ai artifact, so
+  // localStorage is available and appropriate here)
+  const autoReloadCheckbox = document.getElementById('autoReloadAfterDownload');
+  const AUTO_RELOAD_STORAGE_KEY = 'playmart_autoReloadAfterDownload';
+  try{
+    const saved = localStorage.getItem(AUTO_RELOAD_STORAGE_KEY);
+    autoReloadCheckbox.checked = (saved === null) ? true : saved === '1'; // default ON — mitigates the slowdown-over-long-sessions issue
+  }catch(e){
+    autoReloadCheckbox.checked = true; // e.g. localStorage blocked — fall back to the safer default
+  }
+  autoReloadCheckbox.addEventListener('change', ()=>{
+    try{ localStorage.setItem(AUTO_RELOAD_STORAGE_KEY, autoReloadCheckbox.checked ? '1' : '0'); }catch(e){ /* ignore */ }
+  });
   document.getElementById('cropAspectLock').checked = !!BRANCH_DEFAULTS.cropAspectLockDefault;
   const clearBtn = document.getElementById('clearBtn');
   const mergeLayoutEl = document.getElementById('mergeFloatLayout');
@@ -5019,6 +5038,17 @@ const BRANCH_DEFAULTS = (function(){
       // in-memory data it depends on
       await new Promise(res=>setTimeout(res, 300));
       URL.revokeObjectURL(zipUrl);
+
+      if(autoReloadCheckbox.checked){
+        // the most reliable fix for the "gets sluggish over a long session"
+        // issue — a full reload guarantees a completely clean slate,
+        // something clearAllItems() alone can't fully replicate. The
+        // browser's own download notification is confirmation enough, so
+        // there's no need to show our own message before reloading.
+        location.reload();
+        return;
+      }
+
       clearAllItems();
       // clearAllItems() just hid this — show a fresh, explicit confirmation
       // now that the workspace has actually been reset for the next batch
