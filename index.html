@@ -1200,7 +1200,7 @@ const BRANCH_DEFAULTS = (function(){
             <input type="range" id="modalBgOverride" min="45" max="255" step="1" value="150">
             <div class="toggle-row" style="margin-top:10px;">
               <input type="checkbox" id="modalColorMatch">
-              <span>背景の色みも同じ色に揃える</span>
+              <span>背景の色みも同じ色に揃える (C)</span>
             </div>
           </div>
         </div>
@@ -3172,7 +3172,7 @@ const BRANCH_DEFAULTS = (function(){
   const modalBgUseDefault = document.getElementById('modalBgUseDefault');
   const modalBgDetail = document.getElementById('modalBgDetail');
   function updateModalBgDetailVisibility(){
-    modalBgDetail.style.display = modalBgUseDefault.checked ? 'none' : 'block';
+    modalBgDetail.style.display = 'block'; // always shown now — there's enough vertical room after the accordion/tooltip cleanup, and 色味を揃える is used often enough that hiding it behind "全体設定に従う" got in the way
   }
   const modalBgOverride = document.getElementById('modalBgOverride');
   const safetyNetOverlay = document.getElementById('safetyNetOverlay');
@@ -3212,6 +3212,14 @@ const BRANCH_DEFAULTS = (function(){
     // slider), and there's no honest simple CSS-filter approximation for
     // "neutralize the background color cast" — so just run the real
     // computation immediately instead of faking a preview
+    //
+    // ...and same as the brightness slider: touching this means "apply
+    // correction to this photo", full stop — otherwise toggling this while
+    // 明るさ補正 itself is off silently does nothing at all, since the whole
+    // correction pipeline (colorMatch included) is skipped when it's off
+    if(!modalAutoCorrectEnabledEl.checked){
+      modalAutoCorrectEnabledEl.checked = true;
+    }
     reprocessModalItem();
   });
   const modalAutoCorrectEnabledEl = document.getElementById('modalAutoCorrectEnabled');
@@ -3371,6 +3379,7 @@ const BRANCH_DEFAULTS = (function(){
     if(active && active.tagName === 'INPUT' && !isRangeSlider) return;
 
     if((e.key === 'a' || e.key === 'A') && !e.ctrlKey && !e.metaKey && !e.altKey){
+      if(e.repeat) return; // ignore OS key-repeat while held — otherwise a single press can fire this (and the reprocess it triggers) many times over
       // toggles both copies of the aspect-lock checkbox at once (main grid
       // + modal) — they're kept in sync everywhere else, so the shortcut
       // should be too
@@ -3378,6 +3387,23 @@ const BRANCH_DEFAULTS = (function(){
       const newState = !cropAspectLock.checked;
       cropAspectLock.checked = newState;
       gridCropAspectLock.checked = newState;
+      return;
+    }
+
+    if((e.key === 'c' || e.key === 'C') && !e.ctrlKey && !e.metaKey && !e.altKey){
+      if(e.repeat) return; // same reasoning as the A shortcut above
+      // only meaningful while previewing a specific photo — this is a
+      // per-photo setting, unlike the aspect-lock toggle above
+      if(!modalItem) return;
+      e.preventDefault();
+      modalColorMatchEl.checked = !modalColorMatchEl.checked;
+      // same reasoning as modalColorMatchEl's own 'change' handler — this
+      // shortcut bypasses that handler (setting .checked via JS doesn't
+      // fire 'change'), so the same auto-enable needs repeating here
+      if(!modalAutoCorrectEnabledEl.checked){
+        modalAutoCorrectEnabledEl.checked = true;
+      }
+      reprocessModalItem();
       return;
     }
 
@@ -3397,6 +3423,7 @@ const BRANCH_DEFAULTS = (function(){
         setBlurMode(false);
         return;
       }
+      let handledThumbState = false;
       if(thumbDragState || thumbMoveState || thumbCropPendingItem){
         e.preventDefault();
         thumbDragState = null;
@@ -3404,11 +3431,19 @@ const BRANCH_DEFAULTS = (function(){
         thumbCropPendingItem = null;
         thumbCropPendingViewFrac = null;
         hideThumbCropBox();
+        handledThumbState = true;
       }
       if(thumbBlurDragState){
         e.preventDefault();
         thumbBlurDragState = null;
         hideThumbBlurBox();
+        handledThumbState = true;
+      }
+      if(handledThumbState) return; // one of the above already handled this Escape
+      // nothing was mid-interaction — if the preview modal is open, close it
+      if(modalItem){
+        e.preventDefault();
+        closeFineTuneModal();
       }
       return;
     }
@@ -4976,6 +5011,22 @@ const BRANCH_DEFAULTS = (function(){
     if(!modalItem) return;
     modalItem.blurStrength = parseInt(blurStrengthEl.value, 10) || 15;
     if(modalItem.blurRegions && modalItem.blurRegions.length) reprocessModalItem();
+  });
+
+  // Alt+drag directly on the photo starts a blur selection immediately —
+  // same idea as Ctrl+drag for crop, and matches the thumbnail grid's
+  // Alt+drag shortcut, so the two modes use the same key everywhere
+  modalPreviewBox.addEventListener('mousedown', (e)=>{
+    if(!e.altKey || e.ctrlKey || e.metaKey) return;
+    if(!modalItem || cropModeActive) return;
+    if(e.target.closest('.modal-rotate, .crop-confirm-bar, .blur-region, .blur-region-remove')) return;
+    e.preventDefault();
+    if(!blurModeActive) setBlurMode(true);
+    const rect = blurOverlay.getBoundingClientRect();
+    blurDragStart = {x: clamp(e.clientX - rect.left, 0, rect.width), y: clamp(e.clientY - rect.top, 0, rect.height)};
+    blurDragRectEl = document.createElement('div');
+    blurDragRectEl.className = 'blur-region';
+    blurOverlay.appendChild(blurDragRectEl);
   });
 
   blurOverlay.addEventListener('mousedown', (e)=>{
