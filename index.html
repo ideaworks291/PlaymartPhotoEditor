@@ -35,7 +35,8 @@ const STORE_PRESETS = {
     fixedNamingPrefix: null,       // 連番ファイル名の固定接頭辞(nullなら元ファイル名から自動判定)
     fixedNamingWidth: 3,           // 連番の桁数(3なら 001, 002 ...)
     fixedNamingStartNum: 1,        // 連番の開始番号
-    zipFileNamePrefix: 'ishikawa_'  // ダウンロードするZIP自体のファイル名の接頭辞(nullなら従来通り、写真名から自動生成) → 例: ishikawa_0726_1922.zip
+    zipFileNamePrefix: 'ishikawa_', // ダウンロードするZIP自体のファイル名の接頭辞(nullなら従来通り、写真名から自動生成) → 例: ishikawa_0726_1922.zip
+    outSize: 1200                  // 出力サイズ(長辺px)。ヤフオクの表示上限が1200pxのため、それに合わせて固定(画面上には表示していません)
   },
 
   // ---- 大阪門真店 (?store=osaka) ----
@@ -49,7 +50,8 @@ const STORE_PRESETS = {
     fixedNamingPrefix: null,
     fixedNamingWidth: 4,
     fixedNamingStartNum: 1,
-    zipFileNamePrefix: null
+    zipFileNamePrefix: null,
+    outSize: 1200
   }
 
   // ---- 新しい店舗はここに追加 ----
@@ -63,7 +65,8 @@ const STORE_PRESETS = {
   //   fixedNamingPrefix: null,
   //   fixedNamingWidth: 4,
   //   fixedNamingStartNum: 1,
-  //   zipFileNamePrefix: null
+  //   zipFileNamePrefix: null,
+  //   outSize: 1200
   // }
 
 };
@@ -79,7 +82,8 @@ const GENERIC_DEFAULT = {
   fixedNamingPrefix: null,
   fixedNamingWidth: 4,
   fixedNamingStartNum: 1,
-  zipFileNamePrefix: null
+  zipFileNamePrefix: null,
+  outSize: 1200
 };
 
 /* ============================================================
@@ -221,6 +225,52 @@ const BRANCH_DEFAULTS = (function(){
     color:var(--text-dim);
     margin-bottom:6px;
     letter-spacing:.04em;
+  }
+  .section-toggle{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    cursor:pointer;
+    background:none;
+    border:none;
+    padding:0;
+    margin-bottom:6px;
+    font-size:11px;
+    font-family:var(--mono);
+    color:var(--text-dim);
+    letter-spacing:.04em;
+    width:100%;
+    text-align:left;
+  }
+  .section-toggle:hover{color:var(--text);}
+  .section-toggle .caret{
+    display:inline-block;
+    transition:transform .15s;
+    flex-shrink:0;
+  }
+  .section-toggle.open .caret{transform:rotate(90deg);}
+  .section-toggle .hint{
+    color:var(--text-dim);
+    font-weight:400;
+    opacity:.7;
+    font-size:10px;
+  }
+  .section-body{display:none;}
+  .section-body.open{display:block;}
+  .info-tip{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    width:14px;height:14px;
+    border-radius:50%;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    color:var(--text-dim);
+    font-size:10px;
+    font-style:normal;
+    cursor:help;
+    margin-left:4px;
+    vertical-align:middle;
   }
   .safety-net-overlay{
     position:absolute;
@@ -364,7 +414,7 @@ const BRANCH_DEFAULTS = (function(){
     justify-content:center;
     overflow:hidden;
   }
-  .card img{max-width:100%;max-height:100%;display:block;}
+  .card img{max-width:calc(100% - 24px);max-height:calc(100% - 24px);display:block;}
   .card .error-overlay{
     position:absolute;inset:0;
     background:rgba(10,13,16,.94);
@@ -734,16 +784,17 @@ const BRANCH_DEFAULTS = (function(){
   /* subtle center crosshair — makes it easier to eyeball exactly where the
      middle of the box lands (e.g. on a serial number) before confirming */
   .ctrl-crop-preview::before, .ctrl-crop-preview::after,
-  .thumb-crop-box::before, .thumb-crop-box::after{
+  .thumb-crop-box::before, .thumb-crop-box::after,
+  .crop-selection::before, .crop-selection::after{
     content:'';
     position:absolute;
     pointer-events:none;
   }
-  .ctrl-crop-preview::before, .thumb-crop-box::before{
+  .ctrl-crop-preview::before, .thumb-crop-box::before, .crop-selection::before{
     left:0; right:0; top:50%;
     border-top:1px dashed rgba(255,255,255,.55);
   }
-  .ctrl-crop-preview::after, .thumb-crop-box::after{
+  .ctrl-crop-preview::after, .thumb-crop-box::after, .crop-selection::after{
     top:0; bottom:0; left:50%;
     border-left:1px dashed rgba(255,255,255,.55);
   }
@@ -765,8 +816,8 @@ const BRANCH_DEFAULTS = (function(){
   .blur-region-remove:hover{background:#0ea5e9;}
   .crop-selection{
     position:absolute;
-    border:2px solid var(--accent);
-    background:rgba(192,0,129,.15);
+    border:2px dashed var(--accent);
+    background:rgba(192,0,129,.25);
     box-shadow:0 0 0 2000px rgba(0,0,0,.45);
     pointer-events:auto;
     cursor:move;
@@ -947,9 +998,9 @@ const BRANCH_DEFAULTS = (function(){
 
       <div class="setting-group">
         <div class="group-title">出力設定</div>
-        <div class="ctrl">
+        <div class="ctrl" style="display:none;">
           <label>出力サイズ (長辺 px)</label>
-          <input type="number" id="outSize" value="1600" min="400" max="4000" step="100">
+          <input type="number" id="outSize" value="1200" min="400" max="4000" step="100">
         </div>
         <div class="ctrl">
           <label>ファイル名の付け方</label>
@@ -982,7 +1033,7 @@ const BRANCH_DEFAULTS = (function(){
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-left:auto;">
         <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
           <input type="checkbox" id="gridCropAspectLock" style="margin:0;">
-          <label for="gridCropAspectLock" style="cursor:pointer;">範囲選択時に縦横比を保持</label>
+          <label for="gridCropAspectLock" style="cursor:pointer;">範囲選択時に縦横比を保持 (A)</label>
         </div>
         <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
           <label for="gridColumns">1列に並べる枚数:</label>
@@ -1094,33 +1145,43 @@ const BRANCH_DEFAULTS = (function(){
       </div>
       <div class="modal-controls">
         <div class="ctrl">
-          <label>手動トリミング</label>
-          <div class="crop-presets">
-            <button class="preset-btn" id="cropPresetVertHalf" type="button">縦半分(高さ半分・中央)</button>
-            <button class="preset-btn" id="cropPresetHorizHalf" type="button">横半分(幅半分・中央)</button>
-            <button class="preset-btn" id="cropPresetLastUsed" type="button" disabled title="まだ範囲が確定されていません">前回と同じ範囲</button>
-          </div>
-          <div class="btnrow" style="margin-top:10px;">
-            <button id="cropModeBtn" type="button" title="写真をCtrl+ドラッグ(Macは⌘+ドラッグ)でも同じことができます">ドラッグで範囲選択</button>
-          </div>
+          <button class="section-toggle" type="button" id="cropSectionToggle">
+            <span class="caret">▶</span>
+            <span>手動トリミング</span>
+            <span class="hint">(Ctrl+ドラッグでも操作可)</span>
+          </button>
           <div class="toggle-row">
             <input type="checkbox" id="cropAspectLock">
-            <span>ドラッグ中、元画像と同じ縦横比を保つ(サムネイルのCtrl+ドラッグにも適用)</span>
+            <span>ドラッグ中、縦横比を保つ (A)<i class="info-tip" title="元画像と同じ縦横比を保ちます。サムネイルのCtrl+ドラッグにも適用されます">?</i></span>
           </div>
-          <div class="btnrow" style="margin-top:10px;">
-            <button id="cropUndoBtn" type="button" disabled title="直前の操作(トリミング・削除・結合)を取り消します(最大5回・Ctrl+Z / Macは⌘+Z)">元に戻す</button>
-            <button id="cropRedoBtn" type="button" disabled title="取り消した操作をやり直します(Ctrl+Shift+Z / Macは⌘+Shift+Z)">やり直す</button>
-            <button id="cropResetBtn" type="button">トリミング解除</button>
+          <div class="section-body" id="cropSectionBody">
+            <div class="crop-presets">
+              <button class="preset-btn" id="cropPresetVertHalf" type="button" title="高さを半分にトリミングします(中央基準)">高さ半分</button>
+              <button class="preset-btn" id="cropPresetHorizHalf" type="button" title="幅を半分にトリミングします(中央基準)">幅半分</button>
+              <button class="preset-btn" id="cropPresetLastUsed" type="button" disabled title="まだ範囲が確定されていません">前回と同じ範囲</button>
+              <button class="preset-btn" id="cropModeBtn" type="button" title="写真をCtrl+ドラッグ(Macは⌘+ドラッグ)でも同じことができます">範囲選択</button>
+            </div>
+            <div class="btnrow" style="margin-top:10px;">
+              <button id="cropUndoBtn" type="button" disabled title="直前の操作(トリミング・削除・結合)を取り消します(最大5回・Ctrl+Z / Macは⌘+Z)">元に戻す</button>
+              <button id="cropRedoBtn" type="button" disabled title="取り消した操作をやり直します(Ctrl+Shift+Z / Macは⌘+Shift+Z)">やり直す</button>
+              <button id="cropResetBtn" type="button">トリミング解除</button>
+            </div>
           </div>
         </div>
         <div class="ctrl">
-          <label>ぼかし(シリアルナンバーなど隠したい部分)</label>
-          <div class="btnrow" style="margin-top:6px;">
-            <button id="blurModeBtn" type="button" title="写真をAlt+ドラッグ(Macは⌥+ドラッグ)でも同じことができます">ドラッグで範囲を追加</button>
-            <button id="blurClearAllBtn" type="button">全て削除</button>
+          <button class="section-toggle" type="button" id="blurSectionToggle">
+            <span class="caret">▶</span>
+            <span>ぼかし(シリアルナンバーなど)</span>
+            <span class="hint">(Alt+ドラッグでも操作可)</span>
+          </button>
+          <div class="section-body" id="blurSectionBody">
+            <div class="btnrow">
+              <button id="blurModeBtn" type="button" title="写真をAlt+ドラッグ(Macは⌥+ドラッグ)でも同じことができます">ドラッグで範囲を追加</button>
+              <button id="blurClearAllBtn" type="button">全て削除</button>
+            </div>
+            <div class="valline" style="margin-top:8px;"><span>弱め</span><span id="blurStrengthVal">15</span><span>強め</span></div>
+            <input type="range" id="blurStrength" min="4" max="40" step="1" value="15">
           </div>
-          <div class="valline" style="margin-top:8px;"><span>弱め</span><span id="blurStrengthVal">15</span><span>強め</span></div>
-          <input type="range" id="blurStrength" min="4" max="40" step="1" value="15">
         </div>
         <div class="ctrl">
           <div class="toggle-row main-toggle">
@@ -1134,18 +1195,17 @@ const BRANCH_DEFAULTS = (function(){
             <input type="checkbox" id="modalBgUseDefault" checked>
             <span>全体設定に従う</span>
           </div>
-          <div class="valline"><span>暗め</span><input type="number" id="modalBgVal" value="150" min="45" max="255" step="1"><span>明るめ</span></div>
-          <input type="range" id="modalBgOverride" min="45" max="255" step="1" value="150">
-          <div class="toggle-row" style="margin-top:10px;">
-            <input type="checkbox" id="modalColorMatch">
-            <span>背景の色みも同じ色に揃える</span>
+          <div id="modalBgDetail">
+            <div class="valline"><span>暗め</span><input type="number" id="modalBgVal" value="150" min="45" max="255" step="1"><span>明るめ</span></div>
+            <input type="range" id="modalBgOverride" min="45" max="255" step="1" value="150">
+            <div class="toggle-row" style="margin-top:10px;">
+              <input type="checkbox" id="modalColorMatch">
+              <span>背景の色みも同じ色に揃える</span>
+            </div>
           </div>
         </div>
         <div class="ctrl">
-          <label>追加の明るさブースト</label>
-          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 6px;line-height:1.5;">
-            自動補正を目一杯かけても、まだ暗い場合に手動でさらに明るくします。白飛びの安全装置は働かないので、様子を見ながら調整してください。
-          </div>
+          <label>追加の明るさブースト<i class="info-tip" title="自動補正を目一杯かけても、まだ暗い場合に手動でさらに明るくします。白飛びの安全装置は働かないので、様子を見ながら調整してください。">?</i></label>
           <div class="valline"><span>なし</span><span id="extraBoostVal">1.0倍</span><span>強め</span></div>
           <input type="range" id="extraBoost" min="1" max="2.5" step="0.05" value="1">
         </div>
@@ -1228,6 +1288,7 @@ const BRANCH_DEFAULTS = (function(){
   bgColorMatchEl.checked = BRANCH_DEFAULTS.bgColorMatch;
   if(BRANCH_DEFAULTS.gridColumns != null) gridColumnsEl.value = BRANCH_DEFAULTS.gridColumns;
   document.getElementById('gridCropAspectLock').checked = !!BRANCH_DEFAULTS.cropAspectLockDefault;
+  if(BRANCH_DEFAULTS.outSize != null) document.getElementById('outSize').value = BRANCH_DEFAULTS.outSize;
 
   // remembers the person's choice across sessions (this is our own
   // standalone page running in their browser, not a Claude.ai artifact, so
@@ -1926,6 +1987,7 @@ const BRANCH_DEFAULTS = (function(){
     if(!deletedItems.length) return;
     const ok = await askConfirm(`削除済みの${deletedItems.length}枚を完全に削除します。元に戻せなくなりますが、よろしいですか?`);
     if(!ok) return;
+    deletedItems.forEach(({item})=>{ if(item._thumbBlobUrl) URL.revokeObjectURL(item._thumbBlobUrl); });
     deletedItems = [];
     trashGrid.innerHTML = '';
     updateTrashPanelVisibility();
@@ -2011,7 +2073,7 @@ const BRANCH_DEFAULTS = (function(){
       throw new Error('この形式は読み込めません');
     }
 
-    return downscaleToWorkingSize(bitmap, 2400);
+    return downscaleToWorkingSize(bitmap, 1800);
   }
 
   // Releases the decoded working bitmap once a photo has been processed.
@@ -2142,10 +2204,13 @@ const BRANCH_DEFAULTS = (function(){
   // Full-resolution originals from modern phone cameras can be 4000px+ per
   // side. Keeping every one of those in memory for the lifetime of a large
   // batch (for reprocessing/rotation) causes severe memory pressure and
-  // progressively slower processing. 2400px is comfortably above the largest
-  // supported output size (4000px cap on the slider... actually above the
-  // typical 1600px default) while cutting memory use dramatically for
-  // high-megapixel source photos.
+  // progressively slower processing. This tool is used for Yahoo!オークション
+  // listings specifically, which itself caps displayed images at ~1200px
+  // (larger uploads just get auto-resized by Yahoo, with no control over
+  // that resize's quality) — so 1800px gives comfortable headroom above the
+  // 1200px default output size (e.g. for zoomed-in crops) without carrying
+  // around resolution that neither this tool's output nor Yahoo itself will
+  // ever actually use.
   function downscaleToWorkingSize(bitmap, maxDim){
     const w = bitmap.width, h = bitmap.height;
     const longEdge = Math.max(w, h);
@@ -2245,10 +2310,13 @@ const BRANCH_DEFAULTS = (function(){
       appliedInfo = {mode:'bg', bgLum:result.bgLum, target:targetLevel, safeGainCap:result.safeGainCap};
     }else{
       const maxHeadroom = (overrides.headroom != null) ? overrides.headroom : (parseInt(highlightHeadroomEl.value,10) || 0);
+      // build this once and hand it to both — they used to each build their
+      // own copy of the exact same histogram, scanning every pixel twice
+      const sharedHist = autoHighlightEl.checked ? buildLuminanceHistogram(imgData) : null;
       const appliedHeadroom = autoHighlightEl.checked
-        ? computeAutoHighlightHeadroom(imgData, maxHeadroom)
+        ? computeAutoHighlightHeadroom(imgData, maxHeadroom, sharedHist)
         : maxHeadroom;
-      autoLevels(imgData, clipPct, appliedHeadroom);
+      autoLevels(imgData, clipPct, appliedHeadroom, sharedHist);
       appliedInfo = {mode:'hist', headroom:appliedHeadroom};
     }
 
@@ -2269,7 +2337,7 @@ const BRANCH_DEFAULTS = (function(){
     ctx.putImageData(imgData, 0, 0);
 
     // 2. resize to output size (long edge)
-    const outSize = parseInt(outSizeEl.value, 10) || 1600;
+    const outSize = parseInt(outSizeEl.value, 10) || 1200;
     const longEdge = Math.max(canvas.width, canvas.height);
     let finalCanvas = canvas;
     if(longEdge > outSize){
@@ -2364,14 +2432,35 @@ const BRANCH_DEFAULTS = (function(){
   // 1600px processed image as its src still forces the browser to decode
   // and hold that at full resolution. For a large batch that adds up fast.
   // Generate a small dedicated preview instead and use that for the <img>.
+  //
+  // toBlob() + an object URL is used instead of toDataURL(): base64-encoding
+  // via toDataURL is noticeably more CPU-heavy, and this function runs once
+  // per photo on EVERY reprocess (initial load, crop, brightness change,
+  // etc.) — across a large batch that adds up. Since this gets called
+  // repeatedly for the SAME item over its lifetime, the previous object URL
+  // must be explicitly revoked each time; unlike a data URI (just a string),
+  // a forgotten object URL keeps its blob data resident until the page
+  // unloads, which is exactly the kind of hard-to-spot leak that can make a
+  // long session sluggish.
   function updateCardThumbnail(item){
     const imgEl = item.cardEl.querySelector('img');
     if(!imgEl || !item.processedCanvas) return;
     const src = item.processedCanvas;
     const maxDim = 320;
     const longEdge = Math.max(src.width, src.height);
+
+    const applyBlobUrl = (canvas)=>{
+      canvas.toBlob(blob=>{
+        if(!blob) return;
+        const oldUrl = item._thumbBlobUrl;
+        item._thumbBlobUrl = URL.createObjectURL(blob);
+        imgEl.src = item._thumbBlobUrl;
+        if(oldUrl) URL.revokeObjectURL(oldUrl); // revoke AFTER the new one is assigned, so there's no flash of a broken image
+      }, 'image/jpeg', 0.85);
+    };
+
     if(longEdge <= maxDim){
-      imgEl.src = src.toDataURL('image/jpeg', 0.85);
+      applyBlobUrl(src);
       return;
     }
     const scale = maxDim / longEdge;
@@ -2381,7 +2470,7 @@ const BRANCH_DEFAULTS = (function(){
     thumbCanvas.height = th;
     const tctx = thumbCanvas.getContext('2d');
     tctx.drawImage(src, 0, 0, tw, th);
-    imgEl.src = thumbCanvas.toDataURL('image/jpeg', 0.85);
+    applyBlobUrl(thumbCanvas);
   }
 
   // stretch histogram per channel using percentile clip
@@ -2524,14 +2613,23 @@ const BRANCH_DEFAULTS = (function(){
   // Detects whether a large, fairly uniform bright region (e.g. a white/light
   // backdrop) dominates the frame, and returns a suggested highlight headroom.
   // Larger uniform bright mass -> higher blowout risk -> more headroom.
-  function computeAutoHighlightHeadroom(imgData, maxHeadroom){
+  // shared by computeAutoHighlightHeadroom and autoLevels — both independently
+  // built the exact same luminance histogram from the same imgData when used
+  // together (auto-highlight ON), scanning every pixel twice for no reason
+  function buildLuminanceHistogram(imgData){
     const data = imgData.data;
-    const n = data.length/4;
     const hist = new Array(256).fill(0);
     for(let i=0;i<data.length;i+=4){
-      const y = Math.round(0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2]);
-      hist[y]++;
+      const lum = Math.round(0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2]);
+      hist[lum]++;
     }
+    return hist;
+  }
+
+  function computeAutoHighlightHeadroom(imgData, maxHeadroom, precomputedHist){
+    const data = imgData.data;
+    const n = data.length/4;
+    const hist = precomputedHist || buildLuminanceHistogram(imgData);
     // find the densest 10-value window within the bright half of the range
     const windowSize = 10;
     let maxMass = 0;
@@ -2545,7 +2643,7 @@ const BRANCH_DEFAULTS = (function(){
     return Math.max(0, Math.min(maxHeadroom, headroom));
   }
 
-  function autoLevels(imgData, clipPct, highlightHeadroom){
+  function autoLevels(imgData, clipPct, highlightHeadroom, precomputedHist){
     // if both controls are at their minimum, this should be a true no-op —
     // previously a small stretch could still sneak in (see below), which is
     // why "turning everything off" didn't actually leave the photo untouched
@@ -2561,11 +2659,7 @@ const BRANCH_DEFAULTS = (function(){
     // own histogram) subtly shifts color balance whenever the photo has any
     // color cast — this preserves the original color ratios and only
     // adjusts brightness/contrast.
-    const hist = new Array(256).fill(0);
-    for(let i=0;i<data.length;i+=4){
-      const lum = Math.round(0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2]);
-      hist[lum]++;
-    }
+    const hist = precomputedHist || buildLuminanceHistogram(imgData);
     const clipCount = Math.floor(n*clipPct); // no longer floored to a minimum of 1 — 0% now truly means 0
     let lo=0, acc=0;
     while(lo<255){ acc+=hist[lo]; if(acc>clipCount) break; lo++; }
@@ -2645,6 +2739,11 @@ const BRANCH_DEFAULTS = (function(){
   function clearAllItems(){
     loadGeneration++; // invalidate any file-loading/ZIP-extraction still in flight from before this clear
     processingQueue.length = 0; // drop anything queued but not yet started — its card is about to be gone
+    // object URLs (unlike data URIs) are NOT automatically cleaned up when
+    // their <img> is discarded — each one must be explicitly revoked, or it
+    // stays resident in memory for the rest of the page's lifetime
+    items.forEach(item=>{ if(item._thumbBlobUrl) URL.revokeObjectURL(item._thumbBlobUrl); });
+    deletedItems.forEach(({item})=>{ if(item._thumbBlobUrl) URL.revokeObjectURL(item._thumbBlobUrl); });
     items = [];
     grid.innerHTML = '';
     grid.appendChild(emptyMsg);
@@ -3071,6 +3170,10 @@ const BRANCH_DEFAULTS = (function(){
   const modalOverlay = document.getElementById('modalOverlay');
   const modalImg = document.getElementById('modalImg');
   const modalBgUseDefault = document.getElementById('modalBgUseDefault');
+  const modalBgDetail = document.getElementById('modalBgDetail');
+  function updateModalBgDetailVisibility(){
+    modalBgDetail.style.display = modalBgUseDefault.checked ? 'none' : 'block';
+  }
   const modalBgOverride = document.getElementById('modalBgOverride');
   const safetyNetOverlay = document.getElementById('safetyNetOverlay');
 
@@ -3137,6 +3240,7 @@ const BRANCH_DEFAULTS = (function(){
       modalBgUseDefault.checked = true;
       modalBgOverride.value = parseInt(bgTargetLevelEl.value,10) || 150;
     }
+    updateModalBgDetailVisibility();
     modalBgVal.value = modalBgOverride.value;
     modalAutoCorrectEnabledEl.checked = ov.autoCorrect != null ? ov.autoCorrect : autoCorrectEnabledEl.checked;
     modalBgWrap.style.display = bgAnchorModeEl.checked ? '' : 'none';
@@ -3177,7 +3281,7 @@ const BRANCH_DEFAULTS = (function(){
     cropInteraction = 'none';
     cropRectPx = null;
     pendingCropFrac = null;
-    cropModeBtn.textContent = 'ドラッグで範囲選択';
+    cropModeBtn.textContent = '範囲選択';
     cropModeBtn.classList.remove('active');
     cropOverlay.style.display = 'none';
     cropOverlay.classList.remove('active');
@@ -3265,6 +3369,17 @@ const BRANCH_DEFAULTS = (function(){
     // below instead of being exempted here like other inputs.
     const isRangeSlider = active && active.tagName === 'INPUT' && active.type === 'range';
     if(active && active.tagName === 'INPUT' && !isRangeSlider) return;
+
+    if((e.key === 'a' || e.key === 'A') && !e.ctrlKey && !e.metaKey && !e.altKey){
+      // toggles both copies of the aspect-lock checkbox at once (main grid
+      // + modal) — they're kept in sync everywhere else, so the shortcut
+      // should be too
+      e.preventDefault();
+      const newState = !cropAspectLock.checked;
+      cropAspectLock.checked = newState;
+      gridCropAspectLock.checked = newState;
+      return;
+    }
 
     if(e.key === 'Escape'){
       // cancel whatever crop interaction is currently in progress, in
@@ -3354,6 +3469,7 @@ const BRANCH_DEFAULTS = (function(){
   });
 
   modalBgUseDefault.addEventListener('change', ()=>{
+    updateModalBgDetailVisibility();
     if(modalBgUseDefault.checked){
       // reverted to default — reflect the current global target for clarity
       modalBgOverride.value = parseInt(bgTargetLevelEl.value,10) || 150;
@@ -3454,6 +3570,7 @@ const BRANCH_DEFAULTS = (function(){
     // uncheck "use default" automatically instead of requiring a separate step
     if(modalBgUseDefault.checked){
       modalBgUseDefault.checked = false;
+      updateModalBgDetailVisibility();
     }
     // ...and it means "I want brightness correction applied to this photo",
     // full stop — otherwise the slider drag looks like it's doing something
@@ -3486,6 +3603,7 @@ const BRANCH_DEFAULTS = (function(){
     modalBgOverride.value = v;
     if(modalBgUseDefault.checked){
       modalBgUseDefault.checked = false;
+      updateModalBgDetailVisibility();
     }
     if(!modalAutoCorrectEnabledEl.checked){
       modalAutoCorrectEnabledEl.checked = true;
@@ -4495,6 +4613,21 @@ const BRANCH_DEFAULTS = (function(){
     updateCropUndoRedoButtons();
     await reprocessItemAfterHistoryChange(item);
   }
+
+  // Collapsible sections (トリミング/ぼかし) — collapsed by default, since
+  // the most common actions (drawing a range, undo/redo) are also reachable
+  // via keyboard/Ctrl+drag shortcuts without ever opening these
+  function setupSectionToggle(toggleId, bodyId){
+    const toggle = document.getElementById(toggleId);
+    const body = document.getElementById(bodyId);
+    toggle.addEventListener('click', ()=>{
+      const open = !body.classList.contains('open');
+      body.classList.toggle('open', open);
+      toggle.classList.toggle('open', open);
+    });
+  }
+  setupSectionToggle('cropSectionToggle', 'cropSectionBody');
+  setupSectionToggle('blurSectionToggle', 'blurSectionBody');
 
   const cropUndoBtn = document.getElementById('cropUndoBtn');
   const cropRedoBtn = document.getElementById('cropRedoBtn');
