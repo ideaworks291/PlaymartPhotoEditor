@@ -436,13 +436,30 @@ const BRANCH_DEFAULTS = (function(){
     outline-offset:-2px;
   }
   .card .badge-overlimit{
-    position:absolute;top:6px;right:6px;
+    position:absolute;top:34px;right:6px;
     font-family:var(--mono);font-size:10px;font-weight:700;
     background:rgba(239,68,68,.92);color:#fff;
     padding:2px 6px;border-radius:3px;
     z-index:5;
     display:none;
   }
+  .action-controls{
+    position:absolute;top:6px;right:6px;
+    display:flex;gap:4px;
+    z-index:6;
+  }
+  .action-controls button{
+    width:22px;height:22px;
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(10,13,16,.75);
+    border:none;border-radius:4px;
+    color:var(--text-dim);
+    font-size:13px;
+    cursor:pointer;
+    padding:0;
+  }
+  .action-controls .duplicatebtn:hover{color:var(--accent);background:rgba(10,13,16,.9);}
+  .action-controls .removebtn:hover{color:var(--warn);background:rgba(10,13,16,.9);}
   .card.excluded .imgbox img{filter:brightness(.32) saturate(.6);}
   .card.merge-selected{box-shadow:0 0 0 2px var(--accent);}
   .card .merge-chk{accent-color:var(--accent);width:15px;height:15px;}
@@ -507,11 +524,15 @@ const BRANCH_DEFAULTS = (function(){
   .card .meta{
     padding:8px 10px 4px;
     display:flex;
-    justify-content:space-between;
     align-items:center;
     font-family:var(--mono);
     font-size:11px;
     color:var(--text-dim);
+  }
+  .card .meta > label{
+    flex:1 1 50%;
+    display:flex;
+    align-items:center;
   }
   .card .mgmt-row{
     padding:0 10px 10px;
@@ -608,11 +629,6 @@ const BRANCH_DEFAULTS = (function(){
   .mgmt-float-bar button.primary:hover{background:#0ea5e9;}
   .mgmt-float-bar button:disabled{opacity:.4;cursor:not-allowed;}
   .card .chk{accent-color:var(--accent);width:16px;height:16px;}
-  .card .removebtn{
-    background:none;border:none;color:var(--text-dim);
-    font-size:15px;padding:0 2px;cursor:pointer;
-  }
-  .card .removebtn:hover{color:var(--warn);}
   .card .badge-highlight{
     display:block;
     padding:8px 10px 4px;
@@ -1740,6 +1756,43 @@ const BRANCH_DEFAULTS = (function(){
     updateStatus();
   }
 
+  // Duplicates a single photo, inserting the copy directly after the
+  // original — for when a specific shot (e.g. a close-up of a label) was
+  // never taken, and an existing photo of the same product can stand in as
+  // the starting point for a different crop instead. Shares the same
+  // underlying File (safe — File objects are immutable and fine to decode
+  // independently more than once) but starts with a clean edit state: the
+  // point is to crop it differently, not to carry over the original's
+  // crop/blur/brightness tweaks. Keeps the same 管理番号 (still the same
+  // product) but is never itself an anchor (detectedMgmtNumber stays unset)
+  // — it's a derived, ordinary photo in that group, not a scanned tag.
+  function duplicateItem(sourceItem){
+    const id = 'img'+(idSeq++);
+    const newItem = {
+      id, file: sourceItem.file, srcImg:null, processedCanvas:null, baseCanvas:null, cachedBlob:null,
+      included:true, rotation: sourceItem.rotation || 0, manualCrop:null, blurRegions:[], blurStrength:15,
+      extraBoost:1, hasError:false, processed:false, selectedForMerge:false, mergeOrder:null,
+      overrides:{bgTarget:null, headroom:null, colorMatch:null, autoCorrect:null},
+      mgmtNumber: sourceItem.mgmtNumber || '', detectedMgmtNumber: null
+    };
+    const idx = items.indexOf(sourceItem);
+    items.splice(idx === -1 ? items.length : idx + 1, 0, newItem);
+    renderCard(newItem);
+    newItem.cardEl.classList.add('processing');
+    if(sourceItem.cardEl){
+      sourceItem.cardEl.insertAdjacentElement('afterend', newItem.cardEl);
+    }else{
+      grid.appendChild(newItem.cardEl);
+    }
+    syncOrderFromDOM();
+    enqueueProcessing(newItem);
+    pushCreateHistoryEntry(newItem.id);
+    updateEmptyMsg();
+    updateStatus();
+    updateMergeStatus();
+    updateMgmtGroupStripes();
+  }
+
   // Shown whenever new files are added while photos are already loaded, so
   // a second drag-and-drop doesn't silently mix into (or accidentally wipe)
   // an existing batch without the person noticing.
@@ -1876,6 +1929,10 @@ const BRANCH_DEFAULTS = (function(){
         <div class="badge-manualcrop" style="display:none;">手動トリミング済</div>
         <div class="badge-qr" style="display:none;"></div>
         <div class="badge-overlimit" title="タグ写真を除いた実際の使用枚数が、ヤフオクの1商品10枚制限を超えています。結合などで枚数を減らしてください"></div>
+        <div class="action-controls">
+          <button class="duplicatebtn" title="この写真を複製(直後に挿入されます。ラベルの拡大などで別写真を流用したい時に)" type="button">⧉</button>
+          <button class="removebtn" title="削除" type="button">✕</button>
+        </div>
         <div class="rotate-controls">
           <button class="rotate-btn" data-dir="-1" title="反時計回りに90度回転" type="button"><svg viewBox="0 0 24 24" width="100%" height="100%"><path d="M17 3H5V9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 9L9 9L5 14Z" fill="currentColor" stroke="none"/><rect x="10" y="10" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="2.2"/></svg></button>
           <button class="rotate-btn" data-dir="1" title="時計回りに90度回転" type="button"><svg viewBox="0 0 24 24" width="100%" height="100%"><path d="M7 3H19V9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 9L15 9L19 14Z" fill="currentColor" stroke="none"/><rect x="2" y="10" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="2.2"/></svg></button>
@@ -1883,12 +1940,11 @@ const BRANCH_DEFAULTS = (function(){
       </div>
       <div class="meta">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-          <input type="checkbox" class="chk" checked> 使用する
+          <input type="checkbox" class="chk" checked> 使用
         </label>
         <label style="display:flex;align-items:center;gap:5px;cursor:pointer;" title="結合対象として選択(チェックした順番で結合されます)">
           <input type="checkbox" class="merge-chk"> 結合<span class="merge-order-badge" style="display:none;"></span>
         </label>
-        <button class="removebtn" title="削除">✕</button>
       </div>
       <div class="mgmt-row">
         <input type="text" class="mgmt-input" placeholder="管理番号" maxlength="20" title="管理番号(Shift+クリックで範囲選択して一括入力もできます)">
@@ -1936,7 +1992,7 @@ const BRANCH_DEFAULTS = (function(){
         // preview window needed. Strength always follows whatever the
         // preview window's blur-strength slider currently shows — it's
         // rarely changed, so there's no need for a per-region prompt.
-        if(e.target.closest('.rotate-controls')) return;
+        if(e.target.closest('.rotate-controls') || e.target.closest('.action-controls')) return;
         e.preventDefault();
         const rect = cardImgEl.getBoundingClientRect();
         thumbBlurDragState = {
@@ -1965,7 +2021,7 @@ const BRANCH_DEFAULTS = (function(){
       // a new position instead of only being able to redraw from scratch.
       // A plain click with no real movement still falls through to the
       // normal 'click' handler, which confirms it in place.
-      if(thumbCropPendingItem === item && thumbCropPendingViewFrac && !e.target.closest('.rotate-controls')){
+      if(thumbCropPendingItem === item && thumbCropPendingViewFrac && !e.target.closest('.rotate-controls') && !e.target.closest('.action-controls')){
         const rect = cardImgEl.getBoundingClientRect();
         const cx = clamp((e.clientX-rect.left)/rect.width, 0, 1);
         const cy = clamp((e.clientY-rect.top)/rect.height, 0, 1);
@@ -2072,9 +2128,14 @@ const BRANCH_DEFAULTS = (function(){
       card.classList.toggle('excluded', !item.included);
       updateStatus();
     });
-    card.querySelector('.removebtn').addEventListener('click', ()=>{
+    card.querySelector('.removebtn').addEventListener('click', (e)=>{
+      e.stopPropagation();
       deleteItemWithUndo(item, card);
       pushDeleteHistoryEntry([item.id], null);
+    });
+    card.querySelector('.duplicatebtn').addEventListener('click', (e)=>{
+      e.stopPropagation();
+      duplicateItem(item);
     });
 
     const mgmtInputEl = card.querySelector('.mgmt-input');
@@ -3148,7 +3209,7 @@ const BRANCH_DEFAULTS = (function(){
     // pass 1: tally how many photos are in each 管理番号 group, and how
     // many of those are the group's own QR tag photo (normally exactly
     // one, but tallied rather than assumed in case of an edge case).
-    // Only counts photos with "使用する" checked — matches what the
+    // Only counts photos with "使用" checked — matches what the
     // download-time over-limit check counts, so the badge shown here never
     // disagrees with whether downloading actually gets blocked.
     const groupSizes = new Map();
@@ -5564,6 +5625,14 @@ const BRANCH_DEFAULTS = (function(){
     pushHistoryEntry({type:'delete', deletedIds:[...deletedIds], mergedResultId: mergedResultId || null});
   }
 
+  // Undo of a 'create' entry removes the photo (via the same trash
+  // mechanism as an ordinary delete); redo brings it right back via
+  // restoreFromTrash — reusing that existing machinery rather than
+  // building a separate undo path for "creation".
+  function pushCreateHistoryEntry(itemId){
+    pushHistoryEntry({type:'create', itemId});
+  }
+
   // changes: [{itemId, prevNumber, prevDetected, newNumber, newDetected}, ...]
   // Skips pushing entirely if nothing actually changed (e.g. re-applying
   // the same number to an already-matching selection).
@@ -5648,6 +5717,18 @@ const BRANCH_DEFAULTS = (function(){
         it.detectedMgmtNumber = c.prevDetected;
         refreshMgmtDisplay(it);
       });
+      historyRedoStack.push(entry);
+      if(historyRedoStack.length > HISTORY_LIMIT) historyRedoStack.shift();
+      updateCropUndoRedoButtons();
+      updateMgmtGroupStripes();
+      return;
+    }
+
+    if(entry.type === 'create'){
+      const it = items.find(x=>x.id === entry.itemId);
+      if(it){
+        deleteItemWithUndo(it, it.cardEl); // moves it to trash, same as an ordinary delete
+      }
       historyRedoStack.push(entry);
       if(historyRedoStack.length > HISTORY_LIMIT) historyRedoStack.shift();
       updateCropUndoRedoButtons();
@@ -5742,6 +5823,15 @@ const BRANCH_DEFAULTS = (function(){
         it.detectedMgmtNumber = c.newDetected;
         refreshMgmtDisplay(it);
       });
+      historyUndoStack.push(entry);
+      if(historyUndoStack.length > HISTORY_LIMIT) historyUndoStack.shift();
+      updateCropUndoRedoButtons();
+      updateMgmtGroupStripes();
+      return;
+    }
+
+    if(entry.type === 'create'){
+      restoreFromTrash(entry.itemId); // brings it back exactly like undoing a delete would
       historyUndoStack.push(entry);
       if(historyUndoStack.length > HISTORY_LIMIT) historyUndoStack.shift();
       updateCropUndoRedoButtons();
