@@ -52,6 +52,21 @@ const STORE_PRESETS = {
     fixedNamingStartNum: 1,
     zipFileNamePrefix: null,
     outSize: 1200
+  },
+
+  // ---- 横浜(幸浦) (?store=yokohama) ---- 初期設定は石川小松店(ishikawa)と同じ内容で作成
+  yokohama: {
+    autoCorrectEnabled: true,
+    bgAnchorMode: true,
+    bgTargetLevel: 180,
+    bgColorMatch: false,
+    gridColumns: null,
+    cropAspectLockDefault: true,
+    fixedNamingPrefix: null,
+    fixedNamingWidth: 3,
+    fixedNamingStartNum: 1,
+    zipFileNamePrefix: 'yokohama_',
+    outSize: 1200
   }
 
   // ---- 新しい店舗はここに追加 ----
@@ -73,16 +88,16 @@ const STORE_PRESETS = {
 
 // ---- ?store=が無い・該当キーが無い場合のフォールバック(汎用の初期値) ----
 const GENERIC_DEFAULT = {
-  autoCorrectEnabled: false,
+  autoCorrectEnabled: true,  // 自動補正あり・明るさ180が一番見やすいという判断により変更(以前はfalse/150)
   bgAnchorMode: true,
-  bgTargetLevel: 150,
+  bgTargetLevel: 180,
   bgColorMatch: false,
   gridColumns: null,
   cropAspectLockDefault: false,
   fixedNamingPrefix: null,
   fixedNamingWidth: 4,
   fixedNamingStartNum: 1,
-  zipFileNamePrefix: null,
+  zipFileNamePrefix: 'Photo_', // 未登録の店舗名でアクセスした場合のZIP名 → 例: Photo_0808_1430.zip
   outSize: 1200
 };
 
@@ -102,6 +117,8 @@ const BRANCH_DEFAULTS = (function(){
 <title>PLAYMART出品写真編集ツール</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2064%2064%22%3E%0A%20%20%3Crect%20x%3D%224%22%20y%3D%2218%22%20width%3D%2256%22%20height%3D%2238%22%20rx%3D%228%22%20fill%3D%22%23C00081%22/%3E%0A%20%20%3Crect%20x%3D%2222%22%20y%3D%228%22%20width%3D%2220%22%20height%3D%2212%22%20rx%3D%223%22%20fill%3D%22%23C00081%22/%3E%0A%20%20%3Ccircle%20cx%3D%2232%22%20cy%3D%2238%22%20r%3D%2213%22%20fill%3D%22%2314181c%22/%3E%0A%20%20%3Ccircle%20cx%3D%2232%22%20cy%3D%2238%22%20r%3D%228%22%20fill%3D%22%23C00081%22/%3E%0A%20%20%3Ccircle%20cx%3D%2247%22%20cy%3D%2226%22%20r%3D%223%22%20fill%3D%22%2314181c%22/%3E%0A%3C/svg%3E">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@undecaf/zbar-wasm@0.11.0/dist/index.js" crossorigin="anonymous"></script>
 <style>
   :root{
     --bg: #14181c;
@@ -374,7 +391,33 @@ const BRANCH_DEFAULTS = (function(){
     grid-template-columns:repeat(auto-fill, minmax(170px,1fr));
     gap:14px;
     align-items:start;
+    position:relative;
+    transition:opacity .2s;
   }
+  .grid.mgmt-locked{
+    opacity:.45;
+    pointer-events:none;
+  }
+  .grid.mgmt-locked .error-overlay{
+    /* a photo that's ALREADY failed isn't part of what's still being
+       scanned — letting the retry button stay clickable during the lock
+       means one bad photo doesn't force a wait for the rest of the batch */
+    pointer-events:auto;
+  }
+  .mgmt-lock-hint{
+    display:none;
+    align-items:center;
+    gap:8px;
+    font-family:var(--mono);
+    font-size:12px;
+    color:var(--text-dim);
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    border-radius:6px;
+    padding:8px 12px;
+    margin:0 0 10px;
+  }
+  .mgmt-lock-hint.show{display:flex;}
   .card{
     background:var(--panel-2);
     border:1px solid var(--line);
@@ -386,6 +429,20 @@ const BRANCH_DEFAULTS = (function(){
   }
   .card.dragging{opacity:.35;}
   .card.excluded{opacity:.75;}
+  .card.mgmt-group-a{background:rgba(56,189,248,.10);}
+  .card.mgmt-group-b{background:rgba(245,166,35,.09);}
+  .card.mgmt-group-overlimit{
+    outline:2px solid #ef4444;
+    outline-offset:-2px;
+  }
+  .card .badge-overlimit{
+    position:absolute;top:6px;right:6px;
+    font-family:var(--mono);font-size:10px;font-weight:700;
+    background:rgba(239,68,68,.92);color:#fff;
+    padding:2px 6px;border-radius:3px;
+    z-index:5;
+    display:none;
+  }
   .card.excluded .imgbox img{filter:brightness(.32) saturate(.6);}
   .card.merge-selected{box-shadow:0 0 0 2px var(--accent);}
   .card .merge-chk{accent-color:var(--accent);width:15px;height:15px;}
@@ -440,9 +497,15 @@ const BRANCH_DEFAULTS = (function(){
     cursor:pointer;
     flex-shrink:0;
   }
+  .error-retry-reset-btn{
+    border-color:var(--text-dim);
+    color:var(--text-dim);
+    font-size:10px;
+    font-weight:400;
+  }
   .error-retry-btn:hover{background:var(--accent);color:#ffffff;}
   .card .meta{
-    padding:8px 10px 10px;
+    padding:8px 10px 4px;
     display:flex;
     justify-content:space-between;
     align-items:center;
@@ -450,6 +513,100 @@ const BRANCH_DEFAULTS = (function(){
     font-size:11px;
     color:var(--text-dim);
   }
+  .card .mgmt-row{
+    padding:0 10px 10px;
+  }
+  .card .mgmt-input{
+    width:100%;
+    padding:5px 7px;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    border-radius:4px;
+    color:var(--text);
+    font-family:var(--mono);
+    font-size:12px;
+    letter-spacing:.04em;
+  }
+  .card .mgmt-input:focus{
+    outline:none;
+    border-color:var(--accent);
+  }
+  .card .mgmt-input.filled{
+    border-color:#2f7d5a;
+    background:rgba(47,125,90,.12);
+  }
+  /* Shift+click range selection for bulk-assigning a 管理番号 */
+  .card.mgmt-range-selected{
+    box-shadow:0 0 0 2px #38bdf8;
+  }
+  .card.mgmt-range-anchor{
+    box-shadow:0 0 0 3px #0ea5e9;
+  }
+  .mgmt-float-bar{
+    position:fixed;
+    left:50%;
+    bottom:24px;
+    transform:translateX(-50%);
+    background:var(--panel);
+    border:2px solid #38bdf8;
+    border-radius:14px;
+    box-shadow:0 12px 40px rgba(0,0,0,.6), 0 0 0 6px rgba(56,189,248,.15);
+    padding:16px 22px;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    z-index:60;
+    width:420px;
+    max-width:92vw;
+    animation:mergeFloatIn .25s ease-out;
+  }
+  .mgmt-float-info{
+    min-height:20px;
+    display:flex;
+    align-items:center;
+  }
+  .mgmt-float-count{
+    font-family:var(--mono);
+    font-size:14px;
+    color:var(--text);
+    font-weight:700;
+    line-height:1.4;
+  }
+  .mgmt-float-count::before{
+    content:"🏷 ";
+  }
+  .mgmt-float-controls{
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  .mgmt-float-controls input[type=text]{
+    flex:1 1 auto;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    color:var(--text);
+    padding:9px 10px;
+    border-radius:6px;
+    font-family:var(--mono);
+    font-size:14px;
+    letter-spacing:.06em;
+  }
+  .mgmt-float-controls input[type=text]:focus{outline:none;border-color:#38bdf8;}
+  .mgmt-float-bar button{
+    font-family:var(--sans);
+    font-size:15px;
+    font-weight:700;
+    padding:11px 20px;
+    border-radius:6px;
+    border:1px solid var(--line);
+    background:var(--panel-2);
+    color:var(--text);
+    cursor:pointer;
+    white-space:nowrap;
+  }
+  .mgmt-float-bar button.primary{background:#38bdf8;border-color:#38bdf8;color:#0a1620;}
+  .mgmt-float-bar button.primary:hover{background:#0ea5e9;}
+  .mgmt-float-bar button:disabled{opacity:.4;cursor:not-allowed;}
   .card .chk{accent-color:var(--accent);width:16px;height:16px;}
   .card .removebtn{
     background:none;border:none;color:var(--text-dim);
@@ -471,6 +628,16 @@ const BRANCH_DEFAULTS = (function(){
     background:rgba(0,0,0,.6);color:var(--ok);
     padding:2px 5px;border-radius:3px;
   }
+  .card .badge-qr{
+    position:absolute;top:6px;left:6px;
+    font-family:var(--mono);font-size:10px;font-weight:700;
+    background:rgba(56,189,248,.92);color:#0a1620;
+    padding:2px 6px;border-radius:3px;
+    z-index:5;
+    cursor:pointer;
+  }
+  .card .badge-qr:hover{background:rgba(239,68,68,.92);}
+  .card .badge-qr:hover::after{content:" ✕ 起点解除";}
   .rotate-controls{
     position:absolute;bottom:6px;left:6px;
     display:flex;gap:5px;
@@ -679,10 +846,42 @@ const BRANCH_DEFAULTS = (function(){
     padding:18px;
     flex-wrap:wrap;
   }
-  .modal-preview{
-    position:relative;
+  .modal-preview-col{
     flex:0 0 560px;
     width:560px;
+    max-width:100%;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+  .modal-mgmt-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  .modal-mgmt-row label{
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--text-dim);
+    letter-spacing:.04em;
+    white-space:nowrap;
+  }
+  .modal-mgmt-row input{
+    flex:1 1 auto;
+    padding:9px 10px;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    border-radius:4px;
+    color:var(--text);
+    font-family:var(--mono);
+    font-size:15px;
+    letter-spacing:.05em;
+  }
+  .modal-mgmt-row input:focus{outline:none;border-color:var(--accent);}
+  .modal-mgmt-row input.filled{border-color:#2f7d5a;background:rgba(47,125,90,.12);}
+  .modal-preview{
+    position:relative;
+    width:100%;
     max-width:100%;
     height:560px;
     box-sizing:border-box;
@@ -698,7 +897,7 @@ const BRANCH_DEFAULTS = (function(){
     border-radius:6px;
     display:flex;align-items:center;justify-content:center;
   }
-  .modal-preview img{max-width:100%;max-height:100%;display:block;border-radius:4px;}
+  .modal-preview img{width:100%;height:100%;object-fit:contain;display:block;border-radius:4px;}
   .modal-img-before{
     position:absolute;
     display:none;
@@ -1002,12 +1201,18 @@ const BRANCH_DEFAULTS = (function(){
           <label>出力サイズ (長辺 px)</label>
           <input type="number" id="outSize" value="1200" min="400" max="4000" step="100">
         </div>
-        <div class="ctrl">
+        <div class="ctrl" style="display:none;">
           <label>ファイル名の付け方</label>
           <select id="fileNameMode">
             <option value="sequential">連番にする(先頭の写真名を基準に、現在の並び順で)</option>
             <option value="original">元のファイル名を維持</option>
           </select>
+        </div>
+        <div class="ctrl">
+          <label>ファイル名の付け方</label>
+          <div style="font-size:11px;color:var(--text-dim);line-height:1.5;">
+            このバージョンでは、<strong style="color:var(--text);">管理番号 + 枝番</strong>(例: 3301234_01)で自動的に付きます。
+          </div>
         </div>
       </div>
     </div>
@@ -1041,6 +1246,17 @@ const BRANCH_DEFAULTS = (function(){
         </div>
       </div>
     </div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;">
+      <button id="mgmtFullReassignBtn" type="button" title="漏れていた起点を手動で設定し終えた後などに、確定済みの起点(🏷が付いた写真)を基準に全ての番号を計算し直します。起点以外の写真は上書きされます">🔄 管理番号を再割当て</button>
+      <span id="mgmtAutoAssignHint" style="font-size:11px;color:var(--text-dim);"></span>
+    </div>
+
+    <div class="mgmt-lock-hint" id="mgmtLockHint">
+      <span class="spinner"></span>
+      <span>写真を処理中です。QRタグの読み取りが完了するまで、写真の操作は少しお待ちください。</span>
+    </div>
+
     <div class="grid" id="grid">
       <div class="empty" id="emptyMsg">まだ写真がありません</div>
     </div>
@@ -1069,7 +1285,7 @@ const BRANCH_DEFAULTS = (function(){
 
 <div class="modal-overlay" id="trashClearConfirmOverlay" style="display:none;">
   <div class="modal-box" style="max-width:440px;padding:24px;">
-    <p id="trashClearConfirmText" style="margin:0 0 18px;line-height:1.6;"></p>
+    <p id="trashClearConfirmText" style="margin:0 0 18px;line-height:1.6;white-space:pre-line;"></p>
     <div class="btnrow" style="justify-content:flex-end;gap:10px;">
       <button id="trashClearConfirmCancelBtn" type="button">キャンセル</button>
       <button class="primary" id="trashClearConfirmOkBtn" type="button">完全に削除する</button>
@@ -1103,6 +1319,17 @@ const BRANCH_DEFAULTS = (function(){
   </div>
 </div>
 
+<div class="mgmt-float-bar" id="mgmtFloatBar" style="display:none;">
+  <div class="mgmt-float-info">
+    <span class="mgmt-float-count" id="mgmtFloatCount">0枚選択中</span>
+  </div>
+  <div class="mgmt-float-controls">
+    <input type="text" id="mgmtFloatInput" placeholder="管理番号(例: 3301234)" maxlength="20" autocomplete="off">
+    <button class="primary" id="mgmtFloatApplyBtn" disabled>付与</button>
+    <button id="mgmtFloatClearBtn">選択解除</button>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modalOverlay" style="display:none;">
   <div class="modal-box">
     <div class="modal-header">
@@ -1110,7 +1337,12 @@ const BRANCH_DEFAULTS = (function(){
       <button id="modalCloseBtn" type="button">✕</button>
     </div>
     <div class="modal-body">
-      <div class="modal-preview" id="modalPreviewBox">
+      <div class="modal-preview-col">
+        <div class="modal-mgmt-row">
+          <label for="modalMgmtInput">管理番号</label>
+          <input type="text" id="modalMgmtInput" placeholder="管理番号" maxlength="20" title="管理番号(サムネイル一覧の入力欄と連動)">
+        </div>
+        <div class="modal-preview" id="modalPreviewBox">
         <button id="modalPrevBtn" class="modal-nav-btn modal-nav-prev" type="button" title="前の写真">‹</button>
         <button id="modalNextBtn" class="modal-nav-btn modal-nav-next" type="button" title="次の写真">›</button>
         <img id="modalImg" alt="">
@@ -1142,6 +1374,7 @@ const BRANCH_DEFAULTS = (function(){
           <button id="modalRotateLeft" type="button" title="反時計回りに90度回転"><svg viewBox="0 0 24 24" width="100%" height="100%"><path d="M17 3H5V9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 9L9 9L5 14Z" fill="currentColor" stroke="none"/><rect x="10" y="10" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="2.2"/></svg></button>
           <button id="modalRotateRight" type="button" title="時計回りに90度回転"><svg viewBox="0 0 24 24" width="100%" height="100%"><path d="M7 3H19V9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 9L15 9L19 14Z" fill="currentColor" stroke="none"/><rect x="2" y="10" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="2.2"/></svg></button>
         </div>
+        </div>
       </div>
       <div class="modal-controls">
         <div class="ctrl">
@@ -1162,7 +1395,7 @@ const BRANCH_DEFAULTS = (function(){
               <button class="preset-btn" id="cropModeBtn" type="button" title="写真をCtrl+ドラッグ(Macは⌘+ドラッグ)でも同じことができます">範囲選択</button>
             </div>
             <div class="btnrow" style="margin-top:10px;">
-              <button id="cropUndoBtn" type="button" disabled title="直前の操作(トリミング・削除・結合)を取り消します(最大5回・Ctrl+Z / Macは⌘+Z)">元に戻す</button>
+              <button id="cropUndoBtn" type="button" disabled title="直前の操作(トリミング・削除・結合・管理番号)を取り消します(最大30回・Ctrl+Z / Macは⌘+Z)">元に戻す</button>
               <button id="cropRedoBtn" type="button" disabled title="取り消した操作をやり直します(Ctrl+Shift+Z / Macは⌘+Shift+Z)">やり直す</button>
               <button id="cropResetBtn" type="button">トリミング解除</button>
             </div>
@@ -1243,6 +1476,7 @@ const BRANCH_DEFAULTS = (function(){
   const dropEl = document.getElementById('drop');
   const fileInput = document.getElementById('fileInput');
   const grid = document.getElementById('grid');
+  const mgmtLockHint = document.getElementById('mgmtLockHint');
   // fallback: if the mouse is released in a gap between cards rather than
   // precisely on one, the per-card 'drop' listener never fires and the
   // items array can silently drift out of sync with what's shown on screen
@@ -1489,8 +1723,10 @@ const BRANCH_DEFAULTS = (function(){
   let loadGeneration = 0;    // bumped by clearAllItems(); lets an in-progress
                               // handleFiles()/ZIP extraction detect it's been
                               // cancelled and stop adding items partway through
+  let mgmtAutoAssignRanForThisBatch = false; // reset whenever new files are added, so freshly-added tags get picked up too
 
   function addItemsFromFiles(files){
+    mgmtAutoAssignRanForThisBatch = false;
     files.forEach(f=>{
       const id = 'img'+(idSeq++);
       const item = {id, file:f, srcImg:null, processedCanvas:null, baseCanvas:null, cachedBlob:null, included:true, rotation:0, manualCrop:null, blurRegions:[], blurStrength:15, extraBoost:1, hasError:false, processed:false, selectedForMerge:false, mergeOrder:null, overrides:{bgTarget:null, headroom:null, colorMatch:null, autoCorrect:null}};
@@ -1514,9 +1750,10 @@ const BRANCH_DEFAULTS = (function(){
   const trashClearConfirmCancelBtn = document.getElementById('trashClearConfirmCancelBtn');
   const addChoiceClearBtn = document.getElementById('addChoiceClearBtn');
   const addChoiceAppendBtn = document.getElementById('addChoiceAppendBtn');
-  function askConfirm(message){
+  function askConfirm(message, okLabel){
     return new Promise(resolve=>{
       trashClearConfirmText.textContent = message;
+      trashClearConfirmOkBtn.textContent = okLabel || '実行';
       trashClearConfirmOverlay.style.display = 'flex';
       function cleanup(result){
         trashClearConfirmOverlay.style.display = 'none';
@@ -1637,6 +1874,8 @@ const BRANCH_DEFAULTS = (function(){
         <img alt="">
         <span class="status-label">処理中…</span>
         <div class="badge-manualcrop" style="display:none;">手動トリミング済</div>
+        <div class="badge-qr" style="display:none;"></div>
+        <div class="badge-overlimit" title="タグ写真を除いた実際の使用枚数が、ヤフオクの1商品10枚制限を超えています。結合などで枚数を減らしてください"></div>
         <div class="rotate-controls">
           <button class="rotate-btn" data-dir="-1" title="反時計回りに90度回転" type="button"><svg viewBox="0 0 24 24" width="100%" height="100%"><path d="M17 3H5V9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 9L9 9L5 14Z" fill="currentColor" stroke="none"/><rect x="10" y="10" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="2.2"/></svg></button>
           <button class="rotate-btn" data-dir="1" title="時計回りに90度回転" type="button"><svg viewBox="0 0 24 24" width="100%" height="100%"><path d="M7 3H19V9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M23 9L15 9L19 14Z" fill="currentColor" stroke="none"/><rect x="2" y="10" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="2.2"/></svg></button>
@@ -1650,6 +1889,9 @@ const BRANCH_DEFAULTS = (function(){
           <input type="checkbox" class="merge-chk"> 結合<span class="merge-order-badge" style="display:none;"></span>
         </label>
         <button class="removebtn" title="削除">✕</button>
+      </div>
+      <div class="mgmt-row">
+        <input type="text" class="mgmt-input" placeholder="管理番号" maxlength="20" title="管理番号(Shift+クリックで範囲選択して一括入力もできます)">
       </div>
     `;
     grid.appendChild(card);
@@ -1779,6 +2021,19 @@ const BRANCH_DEFAULTS = (function(){
       if(!item.processed) return;
       if(suppressNextThumbClick){ suppressNextThumbClick = false; return; }
 
+      // Shift+click: extend the 管理番号 range selection from the anchor to
+      // this card. A plain click (handled further down) opens the preview as
+      // usual, so this only intercepts when Shift is actually held.
+      if(e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey){
+        e.preventDefault();
+        if(!mgmtAnchorItem){
+          setMgmtAnchor(item);
+        }else{
+          selectMgmtRangeTo(item);
+        }
+        return;
+      }
+
       // a drawn-but-unconfirmed range is waiting on this card — clicking
       // inside it confirms it, regardless of whether Ctrl is still held
       // (releasing Ctrl between the drag and the confirming click is
@@ -1802,7 +2057,7 @@ const BRANCH_DEFAULTS = (function(){
       try{
         const ok = await ensureBaseCanvasLoaded(item);
         if(ok){
-          openFineTuneModal(item);
+          openFineTuneModal(item, true); // fresh click → likely opened specifically for this photo (often QR correction)
         }else{
           alert('この写真のプレビューを開けませんでした。読み込み直してみてください。');
         }
@@ -1820,6 +2075,70 @@ const BRANCH_DEFAULTS = (function(){
     card.querySelector('.removebtn').addEventListener('click', ()=>{
       deleteItemWithUndo(item, card);
       pushDeleteHistoryEntry([item.id], null);
+    });
+
+    const mgmtInputEl = card.querySelector('.mgmt-input');
+    mgmtInputEl.value = item.mgmtNumber || '';
+    mgmtInputEl.classList.toggle('filled', !!item.mgmtNumber);
+    let mgmtSnapshotAtFocus = null; // {mgmtNumber, detectedMgmtNumber} as they were when editing started
+    mgmtInputEl.addEventListener('input', ()=>{
+      item.mgmtNumber = mgmtInputEl.value.trim();
+      mgmtInputEl.classList.toggle('filled', !!item.mgmtNumber);
+      // treat a manually-typed number the same as a successful QR read: it
+      // becomes a valid propagation anchor for future auto-assign runs, and
+      // gets the same 🏷 badge — this is how a tag photo whose QR failed to
+      // scan gets flagged, without needing a separate "this is a tag" toggle
+      item.detectedMgmtNumber = item.mgmtNumber || null;
+      updateMgmtQrBadge(item);
+      updateMgmtGroupStripes();
+      if(modalItem === item){ // keep the modal's own input in sync if it's showing this same photo
+        modalMgmtInput.value = item.mgmtNumber;
+        modalMgmtInput.classList.toggle('filled', !!item.mgmtNumber);
+      }
+    });
+    mgmtInputEl.addEventListener('keydown', (e)=>{
+      if(e.ctrlKey || e.metaKey || e.key === 'Control' || e.key === 'Meta'){
+        // モーダル側と同じ理由: この入力欄にフォーカスが残ったままだと、
+        // Ctrl+ドラッグでのクイックトリミングやAキーの縦横比ロック切替が
+        // 反応しない。Ctrlが押された時点でフォーカスを外す
+        mgmtInputEl.blur();
+        return;
+      }
+      e.stopPropagation(); // keep A/C/Escape shortcuts from firing while typing here
+      if(e.key === 'Enter') mgmtInputEl.blur();
+    });
+    mgmtInputEl.addEventListener('focus', ()=>{
+      mgmtInputEl.select(); // ready to type over the existing number immediately, no manual select needed
+      // snapshot BEFORE any edits — the 'input' event fires on every
+      // keystroke, so history has to be recorded once editing finishes
+      // (blur), not per-character, or a single number would blow through
+      // the entire 5-step undo limit by itself
+      mgmtSnapshotAtFocus = {mgmtNumber: item.mgmtNumber, detectedMgmtNumber: item.detectedMgmtNumber};
+    });
+    mgmtInputEl.addEventListener('blur', ()=>{
+      if(!mgmtSnapshotAtFocus) return;
+      if(mgmtSnapshotAtFocus.mgmtNumber !== item.mgmtNumber || mgmtSnapshotAtFocus.detectedMgmtNumber !== item.detectedMgmtNumber){
+        pushMgmtHistoryEntry([{
+          itemId: item.id,
+          prevNumber: mgmtSnapshotAtFocus.mgmtNumber,
+          prevDetected: mgmtSnapshotAtFocus.detectedMgmtNumber,
+          newNumber: item.mgmtNumber,
+          newDetected: item.detectedMgmtNumber
+        }]);
+      }
+      mgmtSnapshotAtFocus = null;
+    });
+
+    card.querySelector('.badge-qr').addEventListener('click', (e)=>{
+      e.stopPropagation(); // don't let this open the preview modal underneath
+      // removes anchor status only — the assigned mgmtNumber (and the
+      // digits still shown in the input field) are left untouched, in case
+      // the number itself is correct and only the "treat this as a
+      // confirmed tag/anchor" status was set by mistake
+      const prevDetected = item.detectedMgmtNumber;
+      item.detectedMgmtNumber = null;
+      updateMgmtQrBadge(item);
+      pushMgmtHistoryEntry([{itemId: item.id, prevNumber: item.mgmtNumber, prevDetected, newNumber: item.mgmtNumber, newDetected: null}]);
     });
 
     card.addEventListener('dragstart', ()=>{
@@ -1852,28 +2171,17 @@ const BRANCH_DEFAULTS = (function(){
   // FLIP technique: capture each card's position before the reorder,
   // perform it, then animate from the old position to the new one so the
   // shuffle reads clearly instead of cards silently teleporting around.
+  // Previously used the FLIP technique (capture every card's position,
+  // mutate, then animate from old to new position) so the shuffle read
+  // clearly instead of cards silently teleporting. Dropped: this fires on
+  // every dragover as the dragged card crosses other cards — with 100+
+  // photos, calling getBoundingClientRect() on every card (forces a layout
+  // reflow) that often made dragging feel heavy, and the animation itself
+  // read as fussy rather than helpful. Snapping instantly (matching how
+  // Yahoo Auction's own listing screen reorders) is both lighter and reads
+  // as more direct/responsive.
   function animateGridReorder(mutate){
-    const cards = Array.from(grid.querySelectorAll('.card'));
-    const firstRects = new Map(cards.map(c => [c, c.getBoundingClientRect()]));
-
     mutate();
-
-    cards.forEach(c=>{
-      const first = firstRects.get(c);
-      const last = c.getBoundingClientRect();
-      const dx = first.left - last.left;
-      const dy = first.top - last.top;
-      if(dx === 0 && dy === 0) return;
-      c.style.transition = 'none';
-      c.style.transform = `translate(${dx}px, ${dy}px)`;
-      requestAnimationFrame(()=>{
-        c.style.transition = 'transform .22s ease, opacity .15s, border-color .15s';
-        c.style.transform = '';
-        setTimeout(()=>{
-          c.style.transition = '';
-        }, 240);
-      });
-    });
   }
 
   // --- delete with persistent trash panel (restore anytime, no time limit) ---
@@ -1914,14 +2222,25 @@ const BRANCH_DEFAULTS = (function(){
     trashGrid.appendChild(tile);
   }
 
-  function deleteItemWithUndo(item, card){
+  function deleteItemWithUndo(item, card, precomputedSiblings){
     // remember both neighbors, so restore can put it back in roughly the
     // same spot even if ONE of them has since been deleted or moved —
-    // only fall back to the end of the grid if BOTH are unavailable
-    const nextSibling = card.nextElementSibling;
-    const prevSibling = card.previousElementSibling;
-    const nextSiblingId = nextSibling ? nextSibling.dataset.id : null;
-    const prevSiblingId = (prevSibling && prevSibling.classList.contains('card')) ? prevSibling.dataset.id : null;
+    // only fall back to the end of the grid if BOTH are unavailable.
+    // precomputedSiblings lets a caller deleting SEVERAL photos at once
+    // (e.g. a merge) capture everyone's neighbors from the ORIGINAL,
+    // untouched grid up front — otherwise, computing this fresh for each
+    // photo as the batch progresses would see earlier deletions in the
+    // SAME batch as "gone", corrupting the recorded neighbor for anything
+    // that comes after in the loop.
+    let nextSiblingId, prevSiblingId;
+    if(precomputedSiblings){
+      ({nextSiblingId, prevSiblingId} = precomputedSiblings);
+    }else{
+      const nextSibling = card.nextElementSibling;
+      const prevSibling = card.previousElementSibling;
+      nextSiblingId = nextSibling ? nextSibling.dataset.id : null;
+      prevSiblingId = (prevSibling && prevSibling.classList.contains('card')) ? prevSibling.dataset.id : null;
+    }
 
     // if this photo had a drawn-but-unconfirmed crop range waiting on it
     // (independent of whatever else is happening, e.g. it's also being
@@ -1931,6 +2250,14 @@ const BRANCH_DEFAULTS = (function(){
       thumbCropPendingItem = null;
       thumbCropPendingViewFrac = null;
       hideThumbCropBox();
+    }
+    // same for the 管理番号 range selection — a deleted card must not stay
+    // referenced as the anchor or part of the pending range
+    if(typeof mgmtAnchorItem !== 'undefined'){
+      if(mgmtAnchorItem === item) mgmtAnchorItem = null;
+      if(mgmtSelectedItems.includes(item)){
+        mgmtSelectedItems = mgmtSelectedItems.filter(i=>i !== item);
+      }
     }
 
     items = items.filter(i=>i.id!==item.id);
@@ -1981,11 +2308,38 @@ const BRANCH_DEFAULTS = (function(){
     updateEmptyMsg();
     updateMergeStatus();
     updateTrashPanelVisibility();
+
+    // a photo that was trashed while still in an error state would
+    // otherwise come back showing the exact same stale error overlay,
+    // relying on the person to notice and click "この写真だけ再読み込み"
+    // themselves — automatically retrying it here means restoring it is
+    // enough on its own, and sidesteps any issue with that button's click
+    // not registering for whatever reason after this particular sequence
+    if(item.hasError){
+      // use the "reset everything" variant, not a plain retry — if the
+      // person is restoring a photo that was ALREADY failing before they
+      // even deleted it, a plain retry has already been shown not to help
+      // (same broken per-item edit state, same result); resetting gives
+      // this its best real shot at recovering instead of failing the same
+      // way again silently
+      retryItem(item, {resetEdits:true});
+    }
   }
 
+  // Restores several photos as ONE contiguous block, in the exact order
+  // given (which must already be their original grid order) — used for
+  // undoing a merge. restoreFromTrash() alone isn't safe for this: when
+  // several ADJACENT photos are deleted together, each one's stored
+  // prev/next-sibling reflects whatever was LEFT in the grid at the moment
+  // IT was deleted, which is often another photo from the SAME group that
+  // gets deleted moments later. Restoring one at a time off those stale
+  // sibling references can scatter the group instead of rebuilding it.
+  // Anchoring the whole block to just the FIRST photo's prev-sibling (which
+  // is guaranteed to be outside the group, since nothing before it in grid
+  // order belongs to this merge) sidesteps that entirely.
   trashClearAllBtn.addEventListener('click', async ()=>{
     if(!deletedItems.length) return;
-    const ok = await askConfirm(`削除済みの${deletedItems.length}枚を完全に削除します。元に戻せなくなりますが、よろしいですか?`);
+    const ok = await askConfirm(`削除済みの${deletedItems.length}枚を完全に削除します。元に戻せなくなりますが、よろしいですか?`, '完全に削除する');
     if(!ok) return;
     deletedItems.forEach(({item})=>{ if(item._thumbBlobUrl) URL.revokeObjectURL(item._thumbBlobUrl); });
     deletedItems = [];
@@ -2192,6 +2546,9 @@ const BRANCH_DEFAULTS = (function(){
     setStatusLabel(item, '処理中…');
     try{
       process(item);
+      // reuses item.srcImg (already decoded above) — must run before
+      // releaseSrcImg()/releaseFullResCanvas() below free it
+      await scanForMgmtQR(item);
       await cacheProcessedResult(item);
       releaseSrcImg(item);
       releaseFullResCanvas(item);
@@ -2257,10 +2614,24 @@ const BRANCH_DEFAULTS = (function(){
     retryBtn.textContent = 'この写真だけ再読み込み';
     retryBtn.addEventListener('click', ()=>retryItem(item));
     overlay.appendChild(retryBtn);
+    // A safety net for when the SAME error keeps coming back after a plain
+    // retry — most likely because something about this photo's own edit
+    // state (crop/blur/rotation/brightness overrides) is what's actually
+    // broken, and retryItem() alone doesn't touch any of that. Offered as a
+    // second, clearly-separate option rather than folded into the first
+    // button, since it's a more destructive action (discards this photo's
+    // edits) that shouldn't happen by accident.
+    const resetRetryBtn = document.createElement('button');
+    resetRetryBtn.type = 'button';
+    resetRetryBtn.className = 'error-retry-btn error-retry-reset-btn';
+    resetRetryBtn.textContent = '編集を全て取り消して再読み込み';
+    resetRetryBtn.title = 'トリミング・ぼかし・回転・明るさの個別設定をこの写真だけ元に戻してから、もう一度読み込み直します';
+    resetRetryBtn.addEventListener('click', ()=>retryItem(item, {resetEdits:true}));
+    overlay.appendChild(resetRetryBtn);
     updateStatus();
   }
 
-  function retryItem(item){
+  function retryItem(item, opts){
     const card = item.cardEl;
     item.hasError = false;
     item.included = true;
@@ -2277,6 +2648,19 @@ const BRANCH_DEFAULTS = (function(){
     item.baseCanvas = null;
     item.processedCanvas = null;
     item.cachedBlob = null;
+    if(opts && opts.resetEdits){
+      // last-resort recovery: if this photo's own edit state (rather than
+      // the file itself) is what's actually broken, a plain retry alone
+      // would just reprocess with the same bad values and fail again —
+      // this clears everything that's item-specific so it goes back to
+      // acting like a freshly-loaded photo
+      item.manualCrop = null;
+      item.blurRegions = [];
+      item.blurStrength = 15;
+      item.rotation = 0;
+      item.extraBoost = 1;
+      item.overrides = {bgTarget:null, headroom:null, colorMatch:null, autoCorrect:null};
+    }
     setStatusLabel(item, '再読み込み中…');
     enqueueProcessing(item);
     updateStatus();
@@ -2362,11 +2746,24 @@ const BRANCH_DEFAULTS = (function(){
       const cy = Math.max(0, Math.round(mc.y * finalCanvas.height));
       const cw = Math.max(1, Math.min(finalCanvas.width - cx, Math.round(mc.w * finalCanvas.width)));
       const ch = Math.max(1, Math.min(finalCanvas.height - cy, Math.round(mc.h * finalCanvas.height)));
-      const croppedCanvas = document.createElement('canvas');
-      croppedCanvas.width = cw;
-      croppedCanvas.height = ch;
-      croppedCanvas.getContext('2d').drawImage(finalCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
-      finalCanvas = croppedCanvas;
+      // A NaN/degenerate crop can end up stored on the item after certain
+      // rapid repeated crop/undo sequences (e.g. compounding a new crop's
+      // fraction against an already-tiny prior one). Without this check,
+      // such a photo would fail here EVERY time it's processed — including
+      // on retry, since retryItem() doesn't touch manualCrop — so clicking
+      // "この写真だけ再読み込み" would silently fail again and again with
+      // no visible change. Discarding the bad crop and continuing means the
+      // photo (and rest of the batch) recovers instead of getting stuck.
+      if(Number.isFinite(cx) && Number.isFinite(cy) && Number.isFinite(cw) && Number.isFinite(ch) && cw > 0 && ch > 0){
+        const croppedCanvas = document.createElement('canvas');
+        croppedCanvas.width = cw;
+        croppedCanvas.height = ch;
+        croppedCanvas.getContext('2d').drawImage(finalCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
+        finalCanvas = croppedCanvas;
+      }else{
+        console.error('[process] discarding invalid manualCrop:', item.file && item.file.name, mc);
+        item.manualCrop = null;
+      }
     }
 
     // 3b. apply blur regions (e.g. to hide serial numbers) — fractions are
@@ -2374,14 +2771,23 @@ const BRANCH_DEFAULTS = (function(){
     if(item.blurRegions && item.blurRegions.length){
       const fctx = finalCanvas.getContext('2d');
       const strength = item.blurStrength || 15;
+      const validRegions = [];
       item.blurRegions.forEach(region=>{
-        applyBlurToCanvas(finalCanvas, fctx, {
-          x: region.x * finalCanvas.width,
-          y: region.y * finalCanvas.height,
-          w: region.w * finalCanvas.width,
-          h: region.h * finalCanvas.height
-        }, strength);
+        const rx = region.x * finalCanvas.width;
+        const ry = region.y * finalCanvas.height;
+        const rw = region.w * finalCanvas.width;
+        const rh = region.h * finalCanvas.height;
+        // same reasoning as the manualCrop guard above — a degenerate
+        // region here would otherwise fail this photo's processing on
+        // every attempt, retry included
+        if(Number.isFinite(rx) && Number.isFinite(ry) && Number.isFinite(rw) && Number.isFinite(rh) && rw > 0 && rh > 0){
+          applyBlurToCanvas(finalCanvas, fctx, {x:rx, y:ry, w:rw, h:rh}, strength);
+          validRegions.push(region);
+        }else{
+          console.error('[process] discarding invalid blur region:', item.file && item.file.name, region);
+        }
       });
+      if(validRegions.length !== item.blurRegions.length) item.blurRegions = validRegions;
     }
 
     item.baseCanvas = finalCanvas;
@@ -2693,6 +3099,14 @@ const BRANCH_DEFAULTS = (function(){
     `;
     downloadBtn.disabled = (includedCount===0) || items.some(i=>i.included && !i.processed);
 
+    // lock the grid (no clicking, dragging, checkboxes, etc.) while any
+    // photo is still being processed — QR-based auto-assign runs once
+    // processing finishes, and letting the person start editing/reordering
+    // before then risks them acting on numbers that are about to change
+    const shouldLock = stillWorking > 0 && total > 0;
+    grid.classList.toggle('mgmt-locked', shouldLock);
+    mgmtLockHint.classList.toggle('show', shouldLock);
+
     // once everything finishes, swap the lingering "読み込みました。処理を
     // 開始します…" message for a clear completion state, rather than
     // leaving it looking like loading is still (or forever) in progress
@@ -2700,6 +3114,81 @@ const BRANCH_DEFAULTS = (function(){
       zipStatusEl.innerHTML = `<span class="ok">✓</span> 読み込みが完了しました(${total}枚)`;
       zipStatusEl.dataset.done = '1';
     }
+
+    // run the QR-based auto-assign exactly once per batch, only after every
+    // photo has actually finished being scanned — running it earlier could
+    // lock in wrong numbers from an incomplete scan (already-set numbers are
+    // never overwritten, so a premature run can't be "fixed" by a later one)
+    if(stillWorking === 0 && total > 0 && !mgmtAutoAssignRanForThisBatch){
+      mgmtAutoAssignRanForThisBatch = true;
+      if(items.some(it=>it.detectedMgmtNumber)) runMgmtAutoAssign();
+    }
+
+    updateMgmtGroupStripes();
+  }
+
+  // Alternates a subtle background tint every time 管理番号 changes moving
+  // through the grid in order — makes group boundaries easy to spot at a
+  // glance even when a group wraps across rows (an actual border/box around
+  // each group would need to handle L-shaped/wrapped regions, which gets
+  // fiddly and fragile; a color alternation sidesteps that entirely).
+  // Items with no 管理番号 yet get no tint, since "empty" isn't a group.
+  // Yahoo Auction listings cap out at 10 photos per product. Once a
+  // group (same 管理番号) exceeds that — commonly the tag photo plus more
+  // individual shots than usual — it needs to be trimmed down, typically by
+  // merging some of them into combined photos. Flagging it here means that
+  // doesn't have to be counted by hand.
+  // Yahoo Auction listings cap out at 10 photos per product. This counts
+  // only the photos that would actually be uploaded — the group's own QR
+  // tag photo is excluded from the tally, since it's an internal reference
+  // shot, not part of the listing itself.
+  const MGMT_GROUP_PHOTO_LIMIT = 10;
+
+  function updateMgmtGroupStripes(){
+    // pass 1: tally how many photos are in each 管理番号 group, and how
+    // many of those are the group's own QR tag photo (normally exactly
+    // one, but tallied rather than assumed in case of an edge case).
+    // Only counts photos with "使用する" checked — matches what the
+    // download-time over-limit check counts, so the badge shown here never
+    // disagrees with whether downloading actually gets blocked.
+    const groupSizes = new Map();
+    const groupTagCounts = new Map();
+    items.forEach(it=>{
+      const num = it.mgmtNumber || '';
+      if(!num || !it.included) return;
+      groupSizes.set(num, (groupSizes.get(num) || 0) + 1);
+      if(it.detectedMgmtNumber){
+        groupTagCounts.set(num, (groupTagCounts.get(num) || 0) + 1);
+      }
+    });
+
+    // pass 2: alternate the background per group, and flag any group over the limit
+    let lastNumber = null;
+    let useA = true;
+    items.forEach(it=>{
+      if(!it.cardEl) return;
+      const num = it.mgmtNumber || '';
+      const overlimitBadge = it.cardEl.querySelector('.badge-overlimit');
+      if(!num){
+        it.cardEl.classList.remove('mgmt-group-a', 'mgmt-group-b', 'mgmt-group-overlimit');
+        if(overlimitBadge) overlimitBadge.style.display = 'none';
+        return;
+      }
+      if(num !== lastNumber){
+        useA = !useA;
+        lastNumber = num;
+      }
+      const usableCount = (groupSizes.get(num) || 0) - (groupTagCounts.get(num) || 0);
+      const overBy = usableCount - MGMT_GROUP_PHOTO_LIMIT;
+      const overLimit = overBy > 0;
+      it.cardEl.classList.toggle('mgmt-group-a', useA);
+      it.cardEl.classList.toggle('mgmt-group-b', !useA);
+      it.cardEl.classList.toggle('mgmt-group-overlimit', overLimit);
+      if(overlimitBadge){
+        overlimitBadge.style.display = overLimit ? 'block' : 'none';
+        if(overLimit) overlimitBadge.textContent = `${overBy}枚オーバー`;
+      }
+    });
   }
 
   reprocessBtn.addEventListener('click', async ()=>{
@@ -2738,6 +3227,7 @@ const BRANCH_DEFAULTS = (function(){
 
   function clearAllItems(){
     loadGeneration++; // invalidate any file-loading/ZIP-extraction still in flight from before this clear
+    mgmtAutoAssignRanForThisBatch = false;
     processingQueue.length = 0; // drop anything queued but not yet started — its card is about to be gone
     // object URLs (unlike data URIs) are NOT automatically cleaned up when
     // their <img> is discarded — each one must be explicitly revoked, or it
@@ -2747,6 +3237,9 @@ const BRANCH_DEFAULTS = (function(){
     items = [];
     grid.innerHTML = '';
     grid.appendChild(emptyMsg);
+    mgmtAnchorItem = null;   // the cards these referenced are gone
+    mgmtSelectedItems = [];
+    if(typeof refreshMgmtSelectionUI === 'function') refreshMgmtSelectionUI();
     deletedItems = [];
     trashGrid.innerHTML = '';
     updateTrashPanelVisibility();
@@ -2758,7 +3251,482 @@ const BRANCH_DEFAULTS = (function(){
 
   clearBtn.addEventListener('click', clearAllItems);
 
-  // --- combine multiple photos into one ---
+  // --- 管理番号 (management number) assignment ---
+  // Scans a photo's own processed image for a QR code, right after it's
+  // done processing (while its canvas is still resident). Only accepts
+  // purely-numeric content — the tag's QR encodes the 管理番号 digits with
+  // nothing else, and this filters out any other QR/barcode that might
+  // appear elsewhere in a shot (e.g. a product's own barcode).
+  // Decodes a canvas's luminance data for ZXing, trying 0/90/180/270°
+  // rotation. jsQR alone (previous implementation) turned out to miss a
+  // meaningful share of real-world tag photos even with NO physical
+  // obstruction — verified against real failure samples, switching to
+  // ZXing (a more mature/robust decoder used widely outside the browser
+  // too) plus retrying rotated copies recovered about half of those misses.
+  // Tags photographed with tape overlapping a corner finder pattern still
+  // won't be recoverable by any decoder — that's a physical/labeling issue,
+  // not a software one.
+  // Prefer the browser's own native barcode reader when available (Chrome/
+  // Edge, mainly) — it's generally more accurate than any pure-JS decoder
+  // since it uses the platform's own optimized recognition, and skips
+  // loading/running ZXing entirely when it works. Support is checked once
+  // and cached, since BarcodeDetector.getSupportedFormats() is itself async.
+  let barcodeDetectorSupported = null;
+  async function isBarcodeDetectorUsable(){
+    if(barcodeDetectorSupported !== null) return barcodeDetectorSupported;
+    if(typeof BarcodeDetector === 'undefined'){
+      barcodeDetectorSupported = false;
+      return false;
+    }
+    try{
+      const formats = await BarcodeDetector.getSupportedFormats();
+      barcodeDetectorSupported = formats.includes('qr_code');
+    }catch(e){
+      barcodeDetectorSupported = false;
+    }
+    return barcodeDetectorSupported;
+  }
+
+  async function decodeQrNative(canvas){
+    try{
+      const detector = new BarcodeDetector({formats: ['qr_code']});
+      const results = await detector.detect(canvas);
+      if(results && results.length && results[0].rawValue) return results[0].rawValue;
+    }catch(e){
+      // fails on some platforms even when "supported" was reported — fall through to ZXing below
+    }
+    return null;
+  }
+
+  // Note: earlier version tried 0/90/180/270° rotations. Dropped — across
+  // real test photos only 1 in 8 actually needed rotation to be read, while
+  // EVERY non-tag photo (the majority of any batch) would always fail all 4
+  // attempts and pay the full 4x cost for nothing. A tag shot sideways still
+  // gets picked up fine via the manual per-card input (see setItemMgmtNumber).
+  // Tried distinguishing "found a QR-like pattern but couldn't decode it"
+  // (FormatException/ChecksumException) from "nothing found at all"
+  // (NotFoundException) to flag likely-missed tags for manual review — but
+  // in practice, textured surfaces (wood grain, speckled finishes) and
+  // labels/text trigger the same false-candidate detection just as often as
+  // genuinely damaged tags do, so the distinction wasn't reliable enough to
+  // be useful. Just a plain success/failure now.
+  function decodeQrFromCanvas(canvas){
+    if(typeof ZXing === 'undefined') return null; // library failed to load — this is a convenience feature, fail silently
+    const ctx = canvas.getContext('2d');
+    const { width, height, data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const luminances = new Uint8ClampedArray(width*height);
+    for(let i=0;i<width*height;i++){
+      luminances[i] = 0.299*data[i*4] + 0.587*data[i*4+1] + 0.114*data[i*4+2];
+    }
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    const reader = new ZXing.QRCodeReader();
+    try{
+      const source = new ZXing.RGBLuminanceSource(luminances, width, height);
+      const bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source));
+      const result = reader.decode(bitmap, hints);
+      return result.getText();
+    }catch(e){
+      return null;
+    }
+  }
+
+  // Decodes via ZBar (WASM build of the C/C++ ZBar library) — added as a
+  // THIRD fallback after BarcodeDetector and ZXing. Testing against real
+  // failure samples showed ZBar and ZXing succeed on genuinely DIFFERENT
+  // photos (different underlying algorithms/binarization), so trying both
+  // catches more cases than either alone (measured: 4/12 → 7/12 combined).
+  async function decodeQrZbar(canvas){
+    if(typeof zbarWasm === 'undefined') return null; // library failed to load — fail silently, this is a convenience feature
+    try{
+      const ctx = canvas.getContext('2d');
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const symbols = await zbarWasm.scanImageData(imageData);
+      if(symbols && symbols.length) return symbols[0].decode();
+    }catch(e){
+      // ignore — falls through to "not found" below
+    }
+    return null;
+  }
+
+  async function scanForMgmtQR(item){
+    try{
+      // Counterintuitively, testing against real samples showed 1200px
+      // decode BOTH faster AND more accurate than a larger 3200px cap —
+      // very high resolution seems to work against these decoders on some
+      // images (likely finer noise/detail confusing the finder-pattern
+      // search), so this is tuned from measured results, not a guess.
+      const QR_SCAN_MAX_DIM = 1200;
+      let canvas = null;
+
+      // item.srcImg is the SAME original file already decoded moments ago
+      // by decodeToWorkingBitmap() (at 1800px) — reuse that instead of
+      // decoding item.file from scratch a second time. createImageBitmap on
+      // a full-resolution camera photo (and especially the heic2any
+      // conversion it can trigger for HEIC) is genuinely expensive, so
+      // doing it twice per photo was pure waste; downscaling an
+      // already-decoded bitmap is comparatively very cheap.
+      if(item.srcImg && item.srcImg.width && item.srcImg.height){
+        const src = item.srcImg;
+        const scale = Math.min(1, QR_SCAN_MAX_DIM / Math.max(src.width, src.height));
+        canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(src.width * scale));
+        canvas.height = Math.max(1, Math.round(src.height * scale));
+        canvas.getContext('2d').drawImage(src, 0, 0, canvas.width, canvas.height);
+      }else{
+        // srcImg wasn't available for some reason — fall back to a fresh
+        // decode of the original file, same as before
+        let bitmap = null;
+        try{
+          bitmap = await createImageBitmap(item.file);
+        }catch(e){
+          bitmap = null; // e.g. HEIC on a browser that can't decode it natively — fall back below
+        }
+        if(bitmap){
+          const scale = Math.min(1, QR_SCAN_MAX_DIM / Math.max(bitmap.width, bitmap.height));
+          canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+          canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          bitmap.close();
+        }else{
+          // last resort — whatever's already been baked for the main pipeline
+          canvas = item.baseCanvas || item.processedCanvas;
+        }
+      }
+      if(!canvas || !canvas.width || !canvas.height) return;
+      let text = null;
+      if(await isBarcodeDetectorUsable()){
+        text = await decodeQrNative(canvas);
+      }
+      if(!text){
+        text = decodeQrFromCanvas(canvas); // ZXing fallback — unsupported browser, or native detector missed it
+      }
+      if(!text){
+        text = await decodeQrZbar(canvas); // third attempt — catches a different subset of failures than ZXing
+      }
+      if(text){
+        const digits = text.trim();
+        if(/^\d{4,}$/.test(digits)){
+          item.detectedMgmtNumber = digits;
+          updateMgmtQrBadge(item);
+        }
+      }
+    }catch(err){
+      console.error('[QR scan] failed:', item.file && item.file.name, err);
+    }
+  }
+
+  function updateMgmtQrBadge(item){
+    if(!item.cardEl) return;
+    const badge = item.cardEl.querySelector('.badge-qr');
+    if(!badge) return;
+    if(item.detectedMgmtNumber){
+      badge.textContent = '🏷 ' + item.detectedMgmtNumber;
+      badge.style.display = 'block';
+    }else{
+      badge.style.display = 'none';
+    }
+  }
+
+  // Auto-assigns 管理番号 across the whole grid from QR-detected tag photos,
+  // without needing to Shift+click every product's range by hand.
+  //
+  // The tag photo's position (first-of-group vs last-of-group) is detected
+  // from whether the very FIRST photo in the whole batch has a tag:
+  //   - 1枚目にタグがある → "tag-first" convention: each tag's number
+  //     applies to itself AND the untagged photos that follow it, up to
+  //     (not including) the next tag.
+  //   - 1枚目にタグが無い → "tag-last" convention: each tag's number
+  //     applies to itself AND the untagged photos that precede it, back to
+  //     (not including) the previous tag.
+  //
+  // Only fills in items with NO 管理番号 yet — never overwrites something
+  // already entered (manually or from an earlier run of this same button),
+  // so it's always safe to press again after loading more photos.
+  const mgmtAutoAssignHint = document.getElementById('mgmtAutoAssignHint');
+
+  // Re-propagates a single (presumably just-corrected) anchor's number to
+  // the surrounding photos that were affected by it — without needing to
+  // clear everything and re-run the full batch auto-assign. This exists
+  // specifically for: a QR misread earlier caused a chain of photos to
+  // inherit a wrong number; after fixing the anchor by hand, this "catches
+  // up" everything downstream of it in one step instead of correcting each
+  // photo one by one. Direction follows the same 先頭固定/末尾固定
+  // convention as the batch auto-assign, and stops as soon as it reaches
+  // the NEXT confirmed anchor (QR-detected or manually-marked) in that
+  // direction, so it never overwrites a different product's photos.
+  // Assigns every non-anchor photo to its NEAREST anchor (QR-detected or
+  // manually-confirmed), by position in the grid. This replaced an earlier
+  // version that guessed one single "先頭固定 or 末尾固定" direction for the
+  // WHOLE batch — that broke down the moment different products in the same
+  // batch used different tag positions. "Nearest anchor wins" needs no such
+  // guess: a product's own tag is (almost always) closer to its own photos
+  // than to the neighboring product's tag, whichever end it's on.
+  //
+  // overwrite=false (used by the automatic post-load run and the manual
+  // button): only fills photos with no number yet — never touches an
+  // existing value, so it's always safe to press again.
+  // overwrite=true (used by "全体を再設定", see below): recomputes EVERY
+  // non-anchor photo from scratch — for after manually fixing/adding
+  // missed anchors, when photos downstream may be carrying a wrong number
+  // that a fill-only pass would never correct.
+  // Direction is decided ONCE for the whole batch, from whether the very
+  // first photo has a confirmed anchor — 先頭固定 (each anchor's number
+  // flows forward to the untagged photos after it, until the next anchor)
+  // or 末尾固定 (flows backward to the photos before it, until the previous
+  // anchor). Deliberately NOT "nearest anchor wins": missed or misplaced
+  // tags are meant to be fixed by hand — both the number AND, by
+  // drag-reordering the card, its position — so a predictable, singular
+  // convention is more trustworthy here than a distance heuristic that can
+  // shift unexpectedly whenever group sizes aren't perfectly even.
+  //
+  // overwrite=false (used by the automatic post-load run and the manual
+  // button): only fills photos with no number yet — never touches an
+  // existing value, so it's always safe to press again.
+  // overwrite=true (used by "全体を再設定"): recomputes EVERY non-anchor
+  // photo from scratch — for after manually fixing/adding missed anchors,
+  // when photos downstream may be carrying a wrong number that a fill-only
+  // pass would never correct.
+  function computeMgmtAssignment(overwrite, forcedTagFirstMode){
+    if(!items.length) return {changes: [], groupCount: 0};
+    const tagFirstMode = forcedTagFirstMode != null ? forcedTagFirstMode : !!items[0].detectedMgmtNumber;
+    const changes = [];
+    let groupCount = 0;
+
+    function maybeAssign(it, currentNumber){
+      if(!currentNumber) return;
+      if(!overwrite && it.mgmtNumber) return; // fill-only mode leaves existing values alone
+      if(it.mgmtNumber === currentNumber) return;
+      const prevNumber = it.mgmtNumber, prevDetected = it.detectedMgmtNumber;
+      setItemMgmtNumber(it, currentNumber);
+      changes.push({itemId: it.id, prevNumber, prevDetected, newNumber: it.mgmtNumber, newDetected: it.detectedMgmtNumber});
+    }
+
+    if(tagFirstMode){
+      let currentNumber = null;
+      items.forEach(it=>{
+        if(it.detectedMgmtNumber){
+          currentNumber = it.detectedMgmtNumber;
+          groupCount++;
+          maybeAssign(it, currentNumber); // the anchor's OWN number field also needs setting — scanForMgmtQR only sets detectedMgmtNumber, never mgmtNumber itself
+          return;
+        }
+        maybeAssign(it, currentNumber);
+      });
+    }else{
+      let currentNumber = null;
+      for(let i = items.length - 1; i >= 0; i--){
+        const it = items[i];
+        if(it.detectedMgmtNumber){
+          currentNumber = it.detectedMgmtNumber;
+          groupCount++;
+          maybeAssign(it, currentNumber);
+          continue;
+        }
+        maybeAssign(it, currentNumber);
+      }
+    }
+    return {changes, groupCount, tagFirstMode};
+  }
+
+  function runMgmtAutoAssign(){
+    if(!items.length){
+      mgmtAutoAssignHint.textContent = '写真がありません。';
+      return;
+    }
+    const {changes, groupCount, tagFirstMode} = computeMgmtAssignment(false);
+    pushMgmtHistoryEntry(changes); // the whole auto-assign run undoes as one step
+
+    const unassigned = items.filter(it=> !it.mgmtNumber).length;
+    const modeLabel = tagFirstMode ? '先頭固定' : '末尾固定';
+    let msg = `タグ${groupCount}件を検出(${modeLabel}想定)。${changes.length}枚に自動で番号を付与しました。`;
+    if(unassigned > 0){
+      msg += ` ⚠ ${unassigned}枚は該当するタグが見つからず未入力のままです。手動で入力してください。`;
+    }
+    mgmtAutoAssignHint.textContent = msg;
+    updateMgmtGroupStripes();
+    return {groupCount, filledCount: changes.length, unassigned};
+  }
+
+  // "全体を再設定" — see computeMgmtAssignment's overwrite=true doc above.
+  async function runMgmtFullReassign(){
+    if(!items.length) return;
+    const anchorCount = items.filter(it=>it.detectedMgmtNumber).length;
+    if(!anchorCount){
+      mgmtAutoAssignHint.textContent = '起点となる番号(QR検出済み、または手動で確定した番号)が1件もありません。';
+      return;
+    }
+    const proceed = await askConfirm(
+      '手動設定も含めた起点フラグを基準に、管理番号を再割当てします。',
+      '実行'
+    );
+    if(!proceed) return;
+    const {changes, groupCount, tagFirstMode} = computeMgmtAssignment(true);
+    pushMgmtHistoryEntry(changes);
+    const unassigned = items.filter(it=> !it.mgmtNumber).length;
+    const modeLabel = tagFirstMode ? '先頭固定' : '末尾固定';
+    let msg = `全体を再計算しました(起点${groupCount}件・${modeLabel}想定)。${changes.length}枚を更新しました。`;
+    if(unassigned > 0){
+      msg += ` ⚠ ${unassigned}枚は起点が見つからず未入力のままです。`;
+    }
+    mgmtAutoAssignHint.textContent = msg;
+    updateMgmtGroupStripes();
+  }
+
+
+  const mgmtFullReassignBtn = document.getElementById('mgmtFullReassignBtn');
+  mgmtFullReassignBtn.addEventListener('click', ()=> runMgmtFullReassign());
+
+  // Each item carries item.mgmtNumber (the shared per-product number, e.g.
+  // "3301234"). The trailing _01/_02 suffix is NOT stored per item — it's
+  // derived at download time from each item's position within its group, so
+  // that merging/deleting/reordering never leaves gaps in the numbering.
+  //
+  // UI follows the exact same pattern as the merge selection: a bottom-fixed
+  // floating bar that appears only while a range is pending/selected —
+  // nothing permanently on screen when it's not in use.
+  const mgmtFloatBar = document.getElementById('mgmtFloatBar');
+  const mgmtFloatCount = document.getElementById('mgmtFloatCount');
+  const mgmtFloatInput = document.getElementById('mgmtFloatInput');
+  const mgmtFloatApplyBtn = document.getElementById('mgmtFloatApplyBtn');
+  const mgmtFloatClearBtn = document.getElementById('mgmtFloatClearBtn');
+
+  let mgmtAnchorItem = null;       // first card of the pending range selection
+  let mgmtSelectedItems = [];      // full range, in grid order
+
+  function refreshMgmtSelectionUI(){
+    items.forEach(it=>{
+      if(!it.cardEl) return;
+      it.cardEl.classList.toggle('mgmt-range-selected', mgmtSelectedItems.includes(it));
+      it.cardEl.classList.toggle('mgmt-range-anchor', it === mgmtAnchorItem && mgmtSelectedItems.length === 0);
+    });
+    const hasAnchorOnly = !!mgmtAnchorItem && mgmtSelectedItems.length === 0;
+    const hasSelection = mgmtSelectedItems.length > 0;
+    mgmtFloatBar.style.display = (hasAnchorOnly || hasSelection) ? 'flex' : 'none';
+    mgmtFloatApplyBtn.disabled = !hasSelection;
+    if(hasSelection){
+      mgmtFloatCount.textContent = `${mgmtSelectedItems.length}枚を選択中`;
+      mgmtFloatInput.disabled = false;
+    }else if(hasAnchorOnly){
+      mgmtFloatCount.textContent = '起点を選択中(終点をShift+クリック)';
+      mgmtFloatInput.disabled = true;
+    }
+  }
+
+  function setMgmtAnchor(item){
+    mgmtAnchorItem = item;
+    mgmtSelectedItems = [];
+    refreshMgmtSelectionUI();
+  }
+
+  function selectMgmtRangeTo(item){
+    const startIdx = items.indexOf(mgmtAnchorItem);
+    const endIdx = items.indexOf(item);
+    if(startIdx < 0 || endIdx < 0){ clearMgmtSelection(); return; }
+    const [lo, hi] = startIdx <= endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+    mgmtSelectedItems = items.slice(lo, hi+1);
+    refreshMgmtSelectionUI();
+    // the tag photo is always first or last in the range — if either end
+    // has a QR-detected number, pre-fill it (still needs Enter/click to
+    // actually apply, so a wrong auto-read can't silently slip through)
+    const first = mgmtSelectedItems[0];
+    const last = mgmtSelectedItems[mgmtSelectedItems.length - 1];
+    const autoNumber = first.detectedMgmtNumber || last.detectedMgmtNumber || '';
+    mgmtFloatInput.value = autoNumber;
+    mgmtFloatInput.focus();
+    if(autoNumber) mgmtFloatInput.select(); // easy to overwrite if the wrong end got picked up
+  }
+
+  function clearMgmtSelection(){
+    mgmtAnchorItem = null;
+    mgmtSelectedItems = [];
+    refreshMgmtSelectionUI();
+  }
+
+  function setItemMgmtNumber(item, value){
+    item.mgmtNumber = value ? value.trim() : '';
+    if(item.cardEl){
+      const input = item.cardEl.querySelector('.mgmt-input');
+      if(input){
+        input.value = item.mgmtNumber;
+        input.classList.toggle('filled', !!item.mgmtNumber);
+      }
+    }
+    // the modal has its OWN separate input for the same item — keep it in
+    // sync too, in case it's currently showing this exact photo
+    if(typeof modalItem !== 'undefined' && modalItem === item && typeof modalMgmtInput !== 'undefined'){
+      modalMgmtInput.value = item.mgmtNumber;
+      modalMgmtInput.classList.toggle('filled', !!item.mgmtNumber);
+    }
+  }
+
+  function applyMgmtNumberToSelection(){
+    const value = mgmtFloatInput.value.trim();
+    if(!value || !mgmtSelectedItems.length) return;
+    const changes = [];
+    mgmtSelectedItems.forEach(it=>{
+      const prevNumber = it.mgmtNumber;
+      const prevDetected = it.detectedMgmtNumber;
+      setItemMgmtNumber(it, value);
+      if(prevNumber !== it.mgmtNumber){
+        changes.push({itemId: it.id, prevNumber, prevDetected, newNumber: it.mgmtNumber, newDetected: it.detectedMgmtNumber});
+      }
+    });
+    pushMgmtHistoryEntry(changes); // one undo step restores the whole range at once
+    clearMgmtSelection();
+    mgmtFloatInput.value = '';
+    updateMgmtGroupStripes();
+  }
+
+  mgmtFloatApplyBtn.addEventListener('click', applyMgmtNumberToSelection);
+  mgmtFloatClearBtn.addEventListener('click', clearMgmtSelection);
+  mgmtFloatInput.addEventListener('keydown', (e)=>{
+    if(e.ctrlKey || e.metaKey || e.key === 'Control' || e.key === 'Meta'){
+      // 他の管理番号入力欄と同じ理由でフォーカスを解除
+      mgmtFloatInput.blur();
+      return;
+    }
+    // Enter confirms — this is also what a barcode scanner sends after the
+    // digits, so scanning into this field works with no extra clicks
+    e.stopPropagation(); // keep A/C/Escape shortcuts from firing while typing here
+    if(e.key === 'Enter'){
+      e.preventDefault();
+      applyMgmtNumberToSelection();
+    }else if(e.key === 'Escape'){
+      e.preventDefault();
+      clearMgmtSelection();
+    }
+  });
+
+  // Groups items by 管理番号, preserving grid order, and returns a Map of
+  // item -> its 1-based position within its own group. Used at download time
+  // so suffixes always run _01.._0N with no gaps, whatever happened earlier
+  // (merges, deletions, reordering).
+  // Assigns each item's file-name suffix within its 管理番号 group: the
+  // confirmed anchor photo itself (QR-detected, or manually confirmed —
+  // see detectedMgmtNumber) gets "QR" instead of a number, so it's
+  // immediately recognizable in the file list regardless of whether that
+  // tag sits at the front or back of its group. Every OTHER photo in the
+  // group is numbered 01, 02, 03... in on-screen order, skipping over the
+  // anchor rather than counting it — so the numbering reads the same way
+  // whether the tag is 先頭固定 or 末尾固定.
+  function computeMgmtSuffixMap(list){
+    const counters = new Map();
+    const result = new Map();
+    list.forEach(it=>{
+      const key = it.mgmtNumber || '';
+      if(it.detectedMgmtNumber){
+        result.set(it, 'QR');
+        return;
+      }
+      const next = (counters.get(key) || 0) + 1;
+      counters.set(key, next);
+      result.set(it, String(next).padStart(2, '0'));
+    });
+    return result;
+  }
+
   function refreshMergeOrderBadges(){
     // renumber sequentially by mergeOrder so badges always read 1,2,3...
     // with no gaps, even after one in the middle gets unchecked
@@ -2881,6 +3849,26 @@ const BRANCH_DEFAULTS = (function(){
       return;
     }
 
+    // warn if the selection spans more than one 管理番号 — almost always a
+    // mis-selection, but allow overriding, in which case they all fold into
+    // the FIRST selected photo's number
+    const mgmtNumbersInSelection = [...new Set(selected.map(i=>i.mgmtNumber || ''))];
+    const inheritedMgmtNumber = selected[0].mgmtNumber || '';
+    if(mgmtNumbersInSelection.length > 1){
+      // list each PHOTO's own number (not just the distinct values) so a
+      // one-digit difference or an unexpectedly-empty one is easy to spot,
+      // rather than a person having to guess which card is the outlier
+      const perPhotoList = selected.map((it,idx)=> `${idx+1}枚目(${it.file.name || '?'}): ${it.mgmtNumber || '(未入力)'}`).join('\n');
+      const proceed = await askConfirm(
+        `管理番号が異なる写真が混ざっています。\n\n${perPhotoList}\n\nこのまま結合すると、最初に選択した「${inheritedMgmtNumber || '(未入力)'}」に統合されます。続行しますか?`,
+        '続行して結合する'
+      );
+      if(!proceed){
+        mergeRunBtn.disabled = false;
+        return;
+      }
+    }
+
     mergeRunBtn.disabled = true;
     const originalLabel = '結合を実行';
 
@@ -2923,7 +3911,8 @@ const BRANCH_DEFAULTS = (function(){
       const newItem = {
         id, file:mergedFile, srcImg:null, processedCanvas:null, baseCanvas:outCanvas,
         cachedBlob:null, included:true, rotation:0, hasError:false,
-        processed:true, selectedForMerge:false, mergeOrder:null, manualCrop:null, blurRegions:[], blurStrength:15, extraBoost:1, overrides:{bgTarget:null, headroom:null, colorMatch:null, autoCorrect:null}
+        processed:true, selectedForMerge:false, mergeOrder:null, manualCrop:null, blurRegions:[], blurStrength:15, extraBoost:1, overrides:{bgTarget:null, headroom:null, colorMatch:null, autoCorrect:null},
+        mgmtNumber: inheritedMgmtNumber // carries over from the first selected source photo
       };
       items.push(newItem);
       renderCard(newItem);
@@ -2944,8 +3933,32 @@ const BRANCH_DEFAULTS = (function(){
       await cacheProcessedResult(newItem);
       releaseFullResCanvas(newItem);
 
-      const mergedSourceIds = selected.map(item => item.id);
-      selected.forEach(item=>{
+      // Undo needs to restore these photos to their ORIGINAL individual
+      // positions — which, since merge selections aren't always adjacent
+      // (e.g. picking two photos of the same product that ended up apart
+      // in the grid), can mean scattered positions, not just one contiguous
+      // block. deleteItemWithUndo() normally captures each photo's
+      // prev/next-sibling AT THE MOMENT it's deleted — fine for a single
+      // delete, but wrong here: deleting several photos in one batch means
+      // each later deletion sees the EARLIER ones already gone, corrupting
+      // its recorded neighbor. So: capture every source photo's true
+      // neighbor from the CURRENT, untouched grid FIRST, before deleting
+      // anything, and hand that precomputed data to deleteItemWithUndo.
+      // Restoring each one later (in grid order, so any pair that WAS
+      // adjacent still cascades back together) then reconstructs the
+      // original layout exactly — scattered or not.
+      const sourcesByGridOrder = [...selected].sort((a,b)=> items.indexOf(a) - items.indexOf(b));
+      const mergedSourceIds = sourcesByGridOrder.map(item => item.id);
+      const siblingSnapshot = new Map(sourcesByGridOrder.map(item=>{
+        if(!item.cardEl) return [item.id, null];
+        const next = item.cardEl.nextElementSibling;
+        const prev = item.cardEl.previousElementSibling;
+        return [item.id, {
+          nextSiblingId: next ? next.dataset.id : null,
+          prevSiblingId: (prev && prev.classList.contains('card')) ? prev.dataset.id : null
+        }];
+      }));
+      sourcesByGridOrder.forEach(item=>{
         item.selectedForMerge = false;
         item.mergeOrder = null;
         if(item.cardEl){
@@ -2955,7 +3968,7 @@ const BRANCH_DEFAULTS = (function(){
           const mergeBadge = item.cardEl.querySelector('.merge-order-badge');
           if(mergeBadge) mergeBadge.style.display = 'none'; // same reasoning — refreshMergeOrderBadges() below can no longer reach this card once it's been moved to the trash
           try{
-            deleteItemWithUndo(item, item.cardEl);
+            deleteItemWithUndo(item, item.cardEl, siblingSnapshot.get(item.id));
           }catch(err){
             console.error('[merge] failed to move source photo to trash:', item.file && item.file.name, err);
           }
@@ -3169,6 +4182,35 @@ const BRANCH_DEFAULTS = (function(){
   // --- per-photo fine-tune modal ---
   const modalOverlay = document.getElementById('modalOverlay');
   const modalImg = document.getElementById('modalImg');
+
+  // Simply letting CSS (object-fit:contain) stretch a small <img> to fill
+  // the modal isn't a reliable stand-in for what the photo would actually
+  // look like enlarged — that's the BROWSER's own display-scaling
+  // algorithm, which can look better or worse than a real resample and
+  // varies by browser. To actually preview the resampling quality, this
+  // redraws the canvas through the SAME technique process() itself uses
+  // for its own resize step (drawImage with imageSmoothingQuality:'high'),
+  // upscaled to roughly fill the modal's display area — so what's shown
+  // here reflects genuine resampled pixels, not a CSS approximation.
+  // Only upscales (never shrinks an already-large canvas further; the
+  // existing object-fit:contain handles that case fine, same as any
+  // ordinary large photo).
+  function getModalDisplayDataUrl(canvas){
+    const availSize = Math.round(464 * (window.devicePixelRatio || 1)); // 560px box minus 48px padding on each side
+    const longEdge = Math.max(canvas.width, canvas.height);
+    if(longEdge >= availSize){
+      return canvas.toDataURL('image/jpeg', 0.9);
+    }
+    const scale = availSize / longEdge;
+    const upCanvas = document.createElement('canvas');
+    upCanvas.width = Math.round(canvas.width * scale);
+    upCanvas.height = Math.round(canvas.height * scale);
+    const upCtx = upCanvas.getContext('2d');
+    upCtx.imageSmoothingQuality = 'high';
+    upCtx.drawImage(canvas, 0, 0, upCanvas.width, upCanvas.height);
+    return upCanvas.toDataURL('image/jpeg', 0.9);
+  }
+
   const modalBgUseDefault = document.getElementById('modalBgUseDefault');
   const modalBgDetail = document.getElementById('modalBgDetail');
   function updateModalBgDetailVisibility(){
@@ -3232,6 +4274,61 @@ const BRANCH_DEFAULTS = (function(){
     reprocessModalItem();
   });
   let modalItem = null;
+
+  const modalMgmtInput = document.getElementById('modalMgmtInput');
+  let modalMgmtSnapshotAtFocus = null;
+  modalMgmtInput.addEventListener('input', ()=>{
+    if(!modalItem) return;
+    modalItem.mgmtNumber = modalMgmtInput.value.trim();
+    modalMgmtInput.classList.toggle('filled', !!modalItem.mgmtNumber);
+    // same treatment as the per-card input: manual entry counts as a
+    // confirmed anchor, gets the 🏷 badge, and becomes a valid propagation
+    // source for future auto-assign / 全体を再設定 runs
+    modalItem.detectedMgmtNumber = modalItem.mgmtNumber || null;
+    updateMgmtQrBadge(modalItem);
+    updateMgmtGroupStripes();
+    if(modalItem.cardEl){ // keep the thumbnail card's own input in sync too
+      const cardInput = modalItem.cardEl.querySelector('.mgmt-input');
+      if(cardInput){
+        cardInput.value = modalItem.mgmtNumber;
+        cardInput.classList.toggle('filled', !!modalItem.mgmtNumber);
+      }
+    }
+  });
+  modalMgmtInput.addEventListener('keydown', (e)=>{
+    if(e.ctrlKey || e.metaKey || e.key === 'Control' || e.key === 'Meta'){
+      // Ctrl+ドラッグでのクイックトリミングや、Aキーでの縦横比ロック切替は、
+      // この入力欄にフォーカスが残ったままだと反応しない(下のstopPropagation
+      // がAキーなどを握りつぶしてしまうため)。Ctrlが押された時点でフォーカス
+      // を外し、以降のキー操作を通常通り機能させる
+      modalMgmtInput.blur();
+      return;
+    }
+    e.stopPropagation(); // keep A/C/Escape/arrow-key shortcuts from firing while typing here
+    if(e.key === 'Enter'){
+      e.preventDefault();
+      modalMgmtInput.blur(); // commits the value (and records undo history) via the blur handler below, synchronously before this continues
+      closeFineTuneModal();
+    }
+  });
+  modalMgmtInput.addEventListener('focus', ()=>{
+    modalMgmtInput.select();
+    if(modalItem) modalMgmtSnapshotAtFocus = {mgmtNumber: modalItem.mgmtNumber, detectedMgmtNumber: modalItem.detectedMgmtNumber};
+  });
+  modalMgmtInput.addEventListener('blur', ()=>{
+    if(!modalMgmtSnapshotAtFocus || !modalItem) return;
+    if(modalMgmtSnapshotAtFocus.mgmtNumber !== modalItem.mgmtNumber || modalMgmtSnapshotAtFocus.detectedMgmtNumber !== modalItem.detectedMgmtNumber){
+      pushMgmtHistoryEntry([{
+        itemId: modalItem.id,
+        prevNumber: modalMgmtSnapshotAtFocus.mgmtNumber,
+        prevDetected: modalMgmtSnapshotAtFocus.detectedMgmtNumber,
+        newNumber: modalItem.mgmtNumber,
+        newDetected: modalItem.detectedMgmtNumber
+      }]);
+    }
+    modalMgmtSnapshotAtFocus = null;
+  });
+
   let modalPreviewBaselineTarget = 150; // the bg-target value that produced the CURRENTLY displayed preview image;
                                           // used to approximate live brightness changes via a CSS filter while
                                           // dragging the slider, without needing a full per-pixel recompute
@@ -3255,10 +4352,19 @@ const BRANCH_DEFAULTS = (function(){
     modalColorMatchEl.checked = ov.colorMatch != null ? ov.colorMatch : bgColorMatchEl.checked;
   }
 
-  function openFineTuneModal(item){
+  function openFineTuneModal(item, autoFocusMgmt){
     modalItem = item;
     const ov = item.overrides || {bgTarget:null, headroom:null, colorMatch:null, autoCorrect:null};
     modalOpenSnapshot = {bgTarget: ov.bgTarget, colorMatch: ov.colorMatch, autoCorrect: ov.autoCorrect, extraBoost: item.extraBoost || 1};
+
+    modalMgmtInput.value = item.mgmtNumber || '';
+    modalMgmtInput.classList.toggle('filled', !!item.mgmtNumber);
+    if(autoFocusMgmt){
+      // QR写真が連続することは通常無いので、「サムネイルを新しくクリックして開いた」時だけ
+      // 自動フォーカス(全選択)しておく。矢印キーでの連続切り替え中は、それが編集の妨げに
+      // なるので発動させない(呼び出し元で明示的にfalseを渡している)
+      setTimeout(()=>{ modalMgmtInput.focus(); modalMgmtInput.select(); }, 0);
+    }
 
     const infoLabel = document.getElementById('modalInfoLabel');
     if(infoLabel){
@@ -3276,7 +4382,7 @@ const BRANCH_DEFAULTS = (function(){
     extraBoostEl.value = item.extraBoost || 1;
     extraBoostValEl.textContent = parseFloat(extraBoostEl.value).toFixed(2) + '倍';
 
-    modalImg.src = item.processedCanvas.toDataURL('image/jpeg', 0.9);
+    modalImg.src = getModalDisplayDataUrl(item.processedCanvas);
     modalImg.style.filter = ''; // clear any live-preview approximation left over from a previous photo
     endBeforeAfterCompare();
     modalPreviewBaselineTarget = (item.appliedInfo && item.appliedInfo.mode === 'bg') ? item.appliedInfo.target : parseInt(modalBgOverride.value,10) || 150;
@@ -3358,7 +4464,7 @@ const BRANCH_DEFAULTS = (function(){
         return;
       }
       releaseFullResCanvas(modalItem); // same cleanup closeFineTuneModal would have done
-      openFineTuneModal(target);
+      openFineTuneModal(target, false); // arrow-key navigation → continuous editing across multiple photos, don't steal focus
     } finally {
       modalNavInProgress = false;
     }
@@ -3378,7 +4484,10 @@ const BRANCH_DEFAULTS = (function(){
     const isRangeSlider = active && active.tagName === 'INPUT' && active.type === 'range';
     if(active && active.tagName === 'INPUT' && !isRangeSlider) return;
 
-    if((e.key === 'a' || e.key === 'A') && !e.ctrlKey && !e.metaKey && !e.altKey){
+    // This tool has no "select all" feature of its own to protect, so
+    // Ctrl+A / ⌘+A are treated the same as a plain A press rather than
+    // being left to the browser's native select-all.
+    if((e.key === 'a' || e.key === 'A') && !e.altKey){
       if(e.repeat) return; // ignore OS key-repeat while held — otherwise a single press can fire this (and the reprocess it triggers) many times over
       // toggles both copies of the aspect-lock checkbox at once (main grid
       // + modal) — they're kept in sync everywhere else, so the shortcut
@@ -3663,7 +4772,7 @@ const BRANCH_DEFAULTS = (function(){
     const ok = await ensureBaseCanvasLoaded(modalItem);
     if(ok){
       applyRotation(modalItem);
-      modalImg.src = modalItem.processedCanvas.toDataURL('image/jpeg', 0.9);
+      modalImg.src = getModalDisplayDataUrl(modalItem.processedCanvas);
       renderBlurRegions();
     }
   });
@@ -3674,7 +4783,7 @@ const BRANCH_DEFAULTS = (function(){
     const ok = await ensureBaseCanvasLoaded(modalItem);
     if(ok){
       applyRotation(modalItem);
-      modalImg.src = modalItem.processedCanvas.toDataURL('image/jpeg', 0.9);
+      modalImg.src = getModalDisplayDataUrl(modalItem.processedCanvas);
       renderBlurRegions();
     }
   });
@@ -3712,7 +4821,7 @@ const BRANCH_DEFAULTS = (function(){
       if(myToken !== reprocessToken) return; // superseded while processing — don't clobber the newer result
       releaseSrcImg(targetItem);
       if(modalItem === targetItem){
-        modalImg.src = targetItem.processedCanvas.toDataURL('image/jpeg', 0.9);
+        modalImg.src = getModalDisplayDataUrl(targetItem.processedCanvas);
         modalImg.style.filter = ''; // the new image already reflects the real computation — drop the approximation
         endBeforeAfterCompare();
         modalPreviewBaselineTarget = (targetItem.appliedInfo && targetItem.appliedInfo.mode === 'bg') ? targetItem.appliedInfo.target : modalPreviewBaselineTarget;
@@ -4436,7 +5545,7 @@ const BRANCH_DEFAULTS = (function(){
   //     ids), plus the id of the synthesized merged photo, if any. Undo and
   //     redo of a 'delete' entry both just swap restore<->re-delete, so the
   //     SAME entry object is reused in both directions.
-  const HISTORY_LIMIT = 5;
+  const HISTORY_LIMIT = 30; // each entry is lightweight (IDs/coordinates/short strings), so a higher cap costs little memory while giving real headroom now that crop/blur/delete/merge/管理番号 all share the same stack
   let historyUndoStack = [];
   let historyRedoStack = [];
 
@@ -4453,6 +5562,28 @@ const BRANCH_DEFAULTS = (function(){
 
   function pushDeleteHistoryEntry(deletedIds, mergedResultId){
     pushHistoryEntry({type:'delete', deletedIds:[...deletedIds], mergedResultId: mergedResultId || null});
+  }
+
+  // changes: [{itemId, prevNumber, prevDetected, newNumber, newDetected}, ...]
+  // Skips pushing entirely if nothing actually changed (e.g. re-applying
+  // the same number to an already-matching selection).
+  function pushMgmtHistoryEntry(changes){
+    if(!changes || !changes.length) return;
+    pushHistoryEntry({type:'mgmt', changes});
+  }
+
+  // Syncs an item's mgmt-number DISPLAY (input value/filled-state + QR
+  // badge) to whatever item.mgmtNumber/detectedMgmtNumber currently ARE —
+  // used after undo/redo sets those fields directly, without going through
+  // setItemMgmtNumber (which only handles mgmtNumber, not the QR anchor).
+  function refreshMgmtDisplay(item){
+    if(!item.cardEl) return;
+    const input = item.cardEl.querySelector('.mgmt-input');
+    if(input){
+      input.value = item.mgmtNumber || '';
+      input.classList.toggle('filled', !!item.mgmtNumber);
+    }
+    updateMgmtQrBadge(item);
   }
 
   function updateCropUndoRedoButtons(){
@@ -4509,6 +5640,21 @@ const BRANCH_DEFAULTS = (function(){
     if(!historyUndoStack.length) return;
     const entry = historyUndoStack.pop();
 
+    if(entry.type === 'mgmt'){
+      entry.changes.forEach(c=>{
+        const it = items.find(x=>x.id === c.itemId);
+        if(!it) return; // e.g. the photo was since deleted — skip, nothing to restore it onto
+        it.mgmtNumber = c.prevNumber;
+        it.detectedMgmtNumber = c.prevDetected;
+        refreshMgmtDisplay(it);
+      });
+      historyRedoStack.push(entry);
+      if(historyRedoStack.length > HISTORY_LIMIT) historyRedoStack.shift();
+      updateCropUndoRedoButtons();
+      updateMgmtGroupStripes();
+      return;
+    }
+
     if(entry.type === 'delete'){
       // if the trash was permanently emptied since this action, some (or
       // all) of these photos are gone for good — restoring only PART of a
@@ -4520,7 +5666,12 @@ const BRANCH_DEFAULTS = (function(){
         updateCropUndoRedoButtons();
         return;
       }
-      // bring back every photo that was sent to the trash together...
+      // bring back every photo that was sent to the trash together. Each
+      // one's stored prev/next-sibling is now accurate even for a scattered
+      // (non-adjacent) merge selection, since the merge action snapshots
+      // everyone's true original neighbor BEFORE deleting any of them — so
+      // restoring one at a time (in grid order, so adjacent pairs cascade
+      // back together naturally) correctly rebuilds the original layout.
       entry.deletedIds.forEach(id => restoreFromTrash(id));
       // ...and if this was a merge, undo it fully by also removing the
       // synthesized merged photo it produced (reversibly, via the trash —
@@ -4582,6 +5733,21 @@ const BRANCH_DEFAULTS = (function(){
   async function performCropRedo(){
     if(!historyRedoStack.length) return;
     const entry = historyRedoStack.pop();
+
+    if(entry.type === 'mgmt'){
+      entry.changes.forEach(c=>{
+        const it = items.find(x=>x.id === c.itemId);
+        if(!it) return;
+        it.mgmtNumber = c.newNumber;
+        it.detectedMgmtNumber = c.newDetected;
+        refreshMgmtDisplay(it);
+      });
+      historyUndoStack.push(entry);
+      if(historyUndoStack.length > HISTORY_LIMIT) historyUndoStack.shift();
+      updateCropUndoRedoButtons();
+      updateMgmtGroupStripes();
+      return;
+    }
 
     if(entry.type === 'delete'){
       // if the merged photo (or any of the source photos) was permanently
@@ -5129,14 +6295,55 @@ const BRANCH_DEFAULTS = (function(){
     syncOrderFromDOM(); // guarantee export order always matches what's on screen
     const included = items.filter(i=>i.included && i.processed);
     if(!included.length) return;
+
+    // every photo being exported must carry a 管理番号 — filenames are built
+    // from it, so a missing one would silently produce a mis-named file
+    const missingMgmt = included.filter(i=> !i.mgmtNumber);
+    if(missingMgmt.length){
+      missingMgmt.forEach(i=>{
+        if(i.cardEl){
+          const input = i.cardEl.querySelector('.mgmt-input');
+          if(input) input.style.borderColor = '#e5484d';
+        }
+      });
+      if(missingMgmt[0].cardEl) missingMgmt[0].cardEl.scrollIntoView({behavior:'smooth', block:'center'});
+      alert(`管理番号が未入力の写真が ${missingMgmt.length} 枚あります。\n\n全ての写真に管理番号を入力してからダウンロードしてください。(該当箇所を赤枠で示しています)`);
+      return;
+    }
+
+    // soft warning (unlike the missing-番号 check above, this one CAN be
+    // overridden) — occasionally the tag photo itself was never taken, in
+    // which case the group's real photo count can legitimately exceed 10
+    // with no practical way to merge it down, so blocking outright would be
+    // wrong here
+    const overLimitGroups = new Map(); // 管理番号 -> usable count
+    included.forEach(i=>{
+      const num = i.mgmtNumber || '';
+      if(!num) return;
+      if(!overLimitGroups.has(num)) overLimitGroups.set(num, 0);
+      if(!i.detectedMgmtNumber) overLimitGroups.set(num, overLimitGroups.get(num) + 1);
+    });
+    const overLimitList = [...overLimitGroups.entries()].filter(([,count])=> count > MGMT_GROUP_PHOTO_LIMIT);
+    if(overLimitList.length){
+      const summary = overLimitList.map(([num,count])=> `${num}: ${count}枚(${count-MGMT_GROUP_PHOTO_LIMIT}枚オーバー)`).join('\n');
+      const proceed = await askConfirm(
+        `ヤフオクの1商品10枚制限を超えている商品があります。\n\n${summary}\n\nこのままダウンロードしますか?`,
+        'このままダウンロード'
+      );
+      if(!proceed) return;
+    }
+
+    // clear any error highlight left over from a previous blocked attempt
+    included.forEach(i=>{
+      if(i.cardEl){
+        const input = i.cardEl.querySelector('.mgmt-input');
+        if(input) input.style.borderColor = '';
+      }
+    });
+
     downloadBtn.disabled = true;
     const originalLabel = 'ZIPでダウンロード';
-    const sequential = fileNameModeEl.value === 'sequential';
-    const namingScheme = sequential
-      ? (BRANCH_DEFAULTS.fixedNamingPrefix
-          ? {prefix: BRANCH_DEFAULTS.fixedNamingPrefix, width: BRANCH_DEFAULTS.fixedNamingWidth || 3, startNum: BRANCH_DEFAULTS.fixedNamingStartNum || 1}
-          : computeSequentialNamingScheme(included[0].file.name))
-      : null;
+    const mgmtSuffixMap = computeMgmtSuffixMap(included); // _01.._0N per 管理番号 group, gap-free
     const usedNames = new Set();
 
     try{
@@ -5149,18 +6356,19 @@ const BRANCH_DEFAULTS = (function(){
       // export order — this must stay independent of which order items
       // actually finish decoding/encoding in once we process them concurrently
       function computeExportName(item, idx){
-        if(sequential){
-          const wrapAt = Math.pow(10, namingScheme.width);
-          const num = (namingScheme.startNum + idx) % wrapAt;
-          return sanitizeFileNamePart(namingScheme.prefix) + String(num).padStart(namingScheme.width, '0') + '.jpg';
-        }
-        const originalStem = (item.file.name || `photo${idx+1}`).replace(/\.[^.]+$/, '');
-        let name = sanitizeFileNamePart(originalStem) + '.jpg';
+        // The suffix comes from mgmtSuffixMap: either "QR" for the group's
+        // confirmed tag photo, or a zero-padded sequence number ("01","02"…)
+        // for everything else — computed from the CURRENT grid order, so it
+        // stays gap-free even after merges or deletions removed photos from
+        // the middle.
+        const suffix = mgmtSuffixMap.get(item) || String(idx+1).padStart(2, '0');
+        let name = sanitizeFileNamePart(item.mgmtNumber) + '_' + suffix + '.jpg';
         if(usedNames.has(name)){
+          // shouldn't normally happen, but never silently overwrite an entry
           let n = 2;
           let candidate;
           do{
-            candidate = sanitizeFileNamePart(originalStem) + '_' + n + '.jpg';
+            candidate = sanitizeFileNamePart(item.mgmtNumber) + '_' + suffix + '-' + n + '.jpg';
             n++;
           }while(usedNames.has(candidate));
           name = candidate;
